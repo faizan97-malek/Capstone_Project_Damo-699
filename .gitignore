@@ -1,0 +1,13 @@
+# Ignore demo / export folder
+Capstone_Project_Demo-699/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
