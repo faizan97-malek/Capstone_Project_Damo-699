@@ -1,20 +1,28 @@
 # Capstone_Project_Damo-699
-Predictive maintenance using AI4I 2020 sensor data with logistic regression and tree-based models
+Predictive maintenance using AI4I 2020 sensor data with logistic regression and tree-based models.
 
 ##  Project Overview
 This capstone project explores predictive maintenance using operational and sensor-based data from the AI4I 2020 Predictive Maintenance dataset. The objective of the project is to analyze machine failure patterns and establish a foundation for developing predictive models that support proactive maintenance decision-making.
 
-At this stage, the project is in its initial setup and data preparation phase. The focus is on organizing the repository structure, loading the dataset, and preparing the environment for exploratory data analysis and modeling.
+Current efforts focus on data understanding, cleaning, and exploratory data analysis (EDA) to assess data quality, identify key patterns, and evaluate dataset readiness for predictive modeling.
 
 ---
 ##  Current Project Structure
 ```text
 data/
+└──cleaned/
+    └──ai4i2020_cleaned.csv   # Cleaned AI4I 2020 dataset
 └── raw/
-    └── ai4i2020.csv   # Original AI4I 2020 dataset
+    └── ai4i2020.csv          # Original AI4I 2020 dataset
 
-notebook/              # Jupyter notebooks (to be added)
-reports/               # Project proposal and documentation
+notebook/
+└── 01_data_understanding.ipynb
+└── 02_eda.ipynb
+└── 03_data_cleaning.ipynb  
+
+reports/  
+└── project_proposal.pdf      # Project proposal and documentation
+
 src/                   # Source code modules
 visuals/               # Exported charts and visuals
 
@@ -27,7 +35,8 @@ requirements.txt
 ##  Dataset
 - **Name:** AI4I 2020 Predictive Maintenance Dataset  
 - **Format:** CSV  
-- **Location:** `data/raw/ai4i2020.csv`  
+- **Raw Location:** `data/raw/ai4i2020.csv`  
+- **Cleaned Location:** `data/cleaned/ai4i2020_cleaned.csv`
 - **Description:** Contains operational and sensor measurements related to machine performance and failure events.
 
 ---
@@ -44,12 +53,12 @@ requirements.txt
 
 ##  Setup Instructions
 Install required Python dependencies using:
-```bash
+```bash 
 pip install -r requirements.txt
 ```
 
 ##  Project Status
-This project is currently in the initial data loading and preparation phase. Exploratory data analysis, preprocessing, and modeling will be developed in subsequent stages.
+Sprint 1 is currently in progress. Data understanding, cleaning, and exploratory analysis have been completed. Hypothesis Operationalization, Validation Planning and sprint review activities are ongoing.
 
 ##  License
 This project is licensed under the MIT License.
