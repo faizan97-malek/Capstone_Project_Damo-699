@@ -1,40 +1,38 @@
-import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
-def build_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
+def build_preprocessor(df):
     """
-    Builds the preprocessing block for our ML pipeline.
-
-    We do two things:
-    1) One-hot encode the machine 'Type' column
-    2) Standard-scale numeric sensor + engineered features
+    Build preprocessing pipeline:
+    - One-hot encode Type
+    - Scale numeric sensor features
 
     IMPORTANT:
-    The dataset also contains ID-like columns (e.g., 'Product ID', 'UDI').
-    Those should NOT be used for modeling, so we explicitly drop them.
+    We explicitly exclude target/label columns from features,
+    including Machine failure and the individual failure type flags.
     """
 
-    # 1) Categorical column
     categorical_features = ["Type"]
 
-    # 2) Columns we never want in features
-    #    - target column
-    #    - ID columns (pure identifiers → no predictive meaning)
-    drop_cols = ["Machine failure", "Product ID", "UDI"]
+    # Columns that should NEVER be used as features (targets / leakage)
+    exclude_cols = {
+        "UDI",
+        "Product ID",
+        "Machine failure",
+        "TWF",
+        "HDF",
+        "PWF",
+        "OSF",
+        "RNF",
+    }
 
-    # 3) Detect numeric features safely (avoid strings like 'M18918')
-    numeric_features = []
-    for col in df.columns:
-        if col in drop_cols or col in categorical_features:
-            continue
+    numeric_features = [
+        col
+        for col in df.columns
+        if col not in categorical_features and col not in exclude_cols
+    ]
 
-        # Only keep real numeric columns
-        if pd.api.types.is_numeric_dtype(df[col]):
-            numeric_features.append(col)
-
-    # Build ColumnTransformer
     preprocessor = ColumnTransformer(
         transformers=[
             ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
