@@ -1,20 +1,9 @@
-# Python version (recommended)
-python==3.11
-
-# Core data stack
-numpy==2.3.3
 pandas==2.3.3
-scipy==1.16.3
-
-# Machine Learning
-scikit-learn==1.7.2
-joblib==1.5.2
-
-# Model Explainability
+numpy==2.4.2
+scikit-learn==1.8.0
+scipy==1.17.0
+joblib==1.5.3
+matplotlib==3.10.8
+seaborn==0.13.2
 shap==0.50.0
-
-# Visualization (used in evaluation / plots)
-matplotlib==3.10.7
-
-# Streamlit Dashboard
-streamlit==1.50.0
+streamlit==1.54.0

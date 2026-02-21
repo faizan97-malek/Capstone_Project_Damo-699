@@ -34,7 +34,7 @@ def predict(sensor_row: dict) -> dict:
 
     result = {
         "risk_probability": float(probability),
-        "risk_label": risk_tier(probability)
+        "risk_label": risk_tier(probability, high_threshold=0.7)
     }
 
     return result
