@@ -7,3 +7,4 @@ matplotlib==3.10.8
 seaborn==0.13.2
 shap==0.50.0
 streamlit==1.54.0
+plotly==6.5.2
