@@ -1,19 +1,3 @@
-# src/survival_analysis.py
-"""
-Survival analysis utilities for the AI4I 2020 predictive maintenance dataset.
-
-This module is UI-agnostic (no Streamlit imports). It provides:
-- Survival-frame construction (duration/event) using Tool wear as proxy time
-- Kaplan–Meier fitting (overall + grouped)
-- Log-rank test (group comparisons)
-- Cox Proportional Hazards fitting + hazard ratio extraction
-- Optional matplotlib plotting helpers (return fig/ax)
-
-Academic note:
-AI4I 2020 is not a true time-series dataset. We use `Tool wear [min]` as a proxy
-time axis to approximate time-to-event behavior.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
