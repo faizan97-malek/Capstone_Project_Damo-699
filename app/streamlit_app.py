@@ -14,89 +14,65 @@ import plotly.graph_objects as go
 from src.inference import predict
 from src.simulator import generate_sensor_state
 from src.shap_explain import get_top_shap_drivers
+from src.ttf_proxy import estimate_ttf_proxy
 
-
-# -------------------------------------------------
-# Gauge helper (NEW — professor will like this)
-# -------------------------------------------------
-def plot_risk_gauge(probability: float):
-    """
-    Create a visual gauge for failure probability.
-    """
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=probability * 100,
-            title={"text": "Failure Risk (%)"},
-            gauge={
-                "axis": {"range": [0, 100]},
-                "bar": {"thickness": 0.25},
-                "steps": [
-                    {"range": [0, 40], "color": "#2ecc71"},
-                    {"range": [40, 70], "color": "#f1c40f"},
-                    {"range": [70, 100], "color": "#e74c3c"},
-                ],
-            },
-        )
-    )
-
-    fig.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
-    return fig
-
-
-# -------------------------------------------------
-# Streamlit page config
-# -------------------------------------------------
+# --------------------------------------------------
+# Page setup
+# --------------------------------------------------
 st.set_page_config(
     page_title="Real-Time Predictive Maintenance Dashboard",
-    layout="wide",
+    layout="wide"
 )
 
 st.title("Real-Time Predictive Maintenance Dashboard")
 
-
-# -------------------------------------------------
+# --------------------------------------------------
 # Sidebar controls
-# -------------------------------------------------
+# --------------------------------------------------
 st.sidebar.header("Controls")
-refresh_seconds = st.sidebar.slider("Refresh interval (seconds)", 1, 10, 2)
-top_k = st.sidebar.slider("Top SHAP drivers to show", 3, 10, 5)
 
+refresh_seconds = st.sidebar.slider(
+    "Refresh interval (seconds)",
+    1, 10, 2
+)
 
-# -------------------------------------------------
-# Session history (persists during session)
-# -------------------------------------------------
+top_k = st.sidebar.slider(
+    "Top SHAP drivers to show",
+    3, 10, 5
+)
+
+# --------------------------------------------------
+# Session history
+# --------------------------------------------------
 if "history" not in st.session_state:
     st.session_state.history = []
 
-
-# -------------------------------------------------
-# Simulated live sensor snapshot
-# -------------------------------------------------
+# --------------------------------------------------
+# Simulate live sensor
+# --------------------------------------------------
 sensor = generate_sensor_state()
 
+# ✅ SAFE Product ID handling
+product_id = sensor.get("Product ID", "SIM-" + pd.Timestamp.now().strftime("%H%M%S"))
 
-# -------------------------------------------------
+# --------------------------------------------------
 # Prediction
-# -------------------------------------------------
+# --------------------------------------------------
 result = predict(sensor)
 risk_prob = result.get("risk_probability", 0.0)
-risk_label = result.get("risk_label", "N/A")
 
-
-# -------------------------------------------------
-# SHAP drivers (best-effort)
-# -------------------------------------------------
+# --------------------------------------------------
+# SHAP drivers (best effort)
+# --------------------------------------------------
 try:
     shap_drivers = get_top_shap_drivers(sensor, top_k=top_k)
 except Exception as e:
     shap_drivers = []
     st.warning(f"SHAP drivers not available yet: {e}")
 
-
-# -------------------------------------------------
+# --------------------------------------------------
 # Save to history
-# -------------------------------------------------
+# --------------------------------------------------
 st.session_state.history.append(
     {
         "ts": pd.Timestamp.now(),
@@ -104,52 +80,109 @@ st.session_state.history.append(
     }
 )
 
+# --------------------------------------------------
+# TTF Proxy
+# --------------------------------------------------
+ttf_info = estimate_ttf_proxy(
+    history=st.session_state.history,
+    current_sensor=sensor
+)
+ttf_value = ttf_info.get("ttf_proxy_min")
 
-# -------------------------------------------------
-# KPIs
-# -------------------------------------------------
-c1, c2, c3 = st.columns(3)
+# --------------------------------------------------
+# KPI ROW (NOW WITH PRODUCT ID)
+# --------------------------------------------------
+c0, c1, c2, c3, c4 = st.columns(5)
+
+c0.metric("Product ID", product_id)
 c1.metric("Risk Probability", f"{risk_prob:.2%}")
-c2.metric("Risk Level", risk_label)
+c2.metric("Risk Level", result.get("risk_label", "N/A"))
 c3.metric("Top Drivers Count", str(len(shap_drivers)))
+
+if ttf_value is None:
+    c4.metric("TTF Proxy (min)", "Calculating…")
+else:
+    c4.metric("TTF Proxy (min)", f"{ttf_value}")
+
+st.caption(
+    "TTF Proxy is an analytical estimate based on session trend and tool wear "
+    "(AI4I dataset does not provide true time-to-failure)."
+)
 
 st.divider()
 
+# ==================================================
+# Centered Gauge
+# ==================================================
+g_left, g_mid, g_right = st.columns([1, 2, 1])
 
-# -------------------------------------------------
-# Main layout
-# -------------------------------------------------
-left, right = st.columns([1, 1])
+with g_mid:
+    gauge_fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=risk_prob * 100,
+            title={"text": "Failure Risk Gauge (%)"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"thickness": 0.25},
+                "steps": [
+                    {"range": [0, 30], "color": "#2ecc71"},
+                    {"range": [30, 70], "color": "#f1c40f"},
+                    {"range": [70, 100], "color": "#e74c3c"},
+                ],
+            },
+        )
+    )
+
+    gauge_fig.update_layout(height=320)
+    st.plotly_chart(gauge_fig, use_container_width=True)
+
+st.divider()
+
+# --------------------------------------------------
+# Sensor + SHAP panels
+# --------------------------------------------------
+left, right = st.columns(2)
 
 with left:
     st.subheader("Current Sensor State")
-    st.json(sensor)
+
+    sensor_df = pd.DataFrame(
+        list(sensor.items()),
+        columns=["feature", "value"]
+    )
+
+    def _pretty(v):
+        if isinstance(v, (int, float)):
+            return round(v, 3)
+        return v
+
+    sensor_df["value"] = sensor_df["value"].apply(_pretty)
+
+    st.dataframe(sensor_df, use_container_width=True, hide_index=True)
 
 with right:
-    st.subheader("Failure Risk Gauge")
-    gauge_fig = plot_risk_gauge(risk_prob)
-    st.plotly_chart(gauge_fig, use_container_width=True)
-
     st.subheader("Top SHAP Drivers")
     if shap_drivers:
-        st.dataframe(pd.DataFrame(shap_drivers), use_container_width=True)
+        st.dataframe(
+            pd.DataFrame(shap_drivers),
+            use_container_width=True,
+            hide_index=True
+        )
     else:
         st.info("No SHAP drivers to display yet.")
 
-
 st.divider()
 
-
-# -------------------------------------------------
-# Risk trend chart
-# -------------------------------------------------
+# --------------------------------------------------
+# Risk trend
+# --------------------------------------------------
 st.subheader("Risk Trend (this session)")
 hist_df = pd.DataFrame(st.session_state.history)
 st.line_chart(hist_df.set_index("ts")[["risk_probability"]])
 
-
-# -------------------------------------------------
-# Auto refresh loop
-# -------------------------------------------------
+# --------------------------------------------------
+# Auto refresh
+# --------------------------------------------------
 time.sleep(refresh_seconds)
 st.rerun()
