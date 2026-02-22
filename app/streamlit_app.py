@@ -82,7 +82,7 @@ if st.session_state.page3_pid is None and product_ids:
 st.sidebar.header("Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["1) Simulation Dashboard", "2) Editable Data Table", "3) Survival Analysis (KM + Cox)"],
+    ["1) Simulation Dashboard", "2) WHAT-IF Analysis", "3) Survival Analysis"],
     index=0,
 )
 
@@ -96,7 +96,7 @@ if page == "1) Simulation Dashboard":
     st.sidebar.header("Simulation Controls")
 
     st.session_state.page1_pid = st.sidebar.selectbox(
-        "Page 1 Product ID (drives KPIs here)",
+        "Product ID",
         product_ids,
         index=product_ids.index(st.session_state.page1_pid) if st.session_state.page1_pid in product_ids else 0,
         key="page1_pid_selectbox",
@@ -126,12 +126,12 @@ if page == "1) Simulation Dashboard":
         st.rerun()
 
 # Page 2 controls
-elif page == "2) Editable Data Table":
+elif page == "2) WHAT-IF Analysis":
     st.sidebar.markdown("---")
     st.sidebar.header("Table Controls")
 
     st.session_state.page2_pid = st.sidebar.selectbox(
-        "Page 2 Product ID (drives KPIs here)",
+        "Product ID",
         product_ids,
         index=product_ids.index(st.session_state.page2_pid) if st.session_state.page2_pid in product_ids else 0,
         key="page2_pid_selectbox",
@@ -148,7 +148,7 @@ else:
     st.sidebar.header("Survival Controls")
 
     st.session_state.page3_pid = st.sidebar.selectbox(
-        "Page 3 Product ID (drives KPIs + survival here)",
+        "Product ID",
         product_ids,
         index=product_ids.index(st.session_state.page3_pid) if st.session_state.page3_pid in product_ids else 0,
         key="page3_pid_selectbox",
@@ -165,7 +165,7 @@ else:
 # ---------------------------
 if page == "1) Simulation Dashboard":
     active_pid = st.session_state.page1_pid
-elif page == "2) Editable Data Table":
+elif page == "2) WHAT-IF Analysis":
     active_pid = st.session_state.page2_pid
 else:
     active_pid = st.session_state.page3_pid
@@ -186,10 +186,6 @@ else:
 # ---------------------------
 risk_prob, shap_drivers = render_common_kpis_and_gauge(kpi_sensor, top_k=top_k)
 
-st.caption(
-    "Page 1 uses optional aging simulation. Page 2 edits data (press Done). "
-    "Page 3 shows KM (cohort) + Cox (individual) survival using Tool wear as proxy time."
-)
 st.divider()
 
 
@@ -230,20 +226,49 @@ if page == "1) Simulation Dashboard":
     )
 
     left, right = st.columns(2)
+
     with left:
-        st.subheader("Current Sensor State (Page 1 Content)")
-        st.dataframe(sensor_table(sensor), use_container_width=True)
+        st.subheader("Live Sensor Readings")
+
+        df_sensor = sensor_table(sensor)
+
+        # add professional numbering
+        df_sensor = df_sensor.reset_index(drop=True)
+        df_sensor.index = range(1, len(df_sensor) + 1)
+
+        st.dataframe(df_sensor, use_container_width=True,)
 
     with right:
-        st.subheader("Top SHAP Drivers (Common)")
+        st.subheader("Key Risk Drivers (SHAP Analysis)")
         if shap_drivers:
-            st.dataframe(pd.DataFrame(shap_drivers), use_container_width=True)
+            shap_df = pd.DataFrame(shap_drivers)
+
+            FEATURE_NAME_MAP = {
+                "num__Torque_RPM_ratio": "Mechanical Load Ratio",
+                "num__Tool wear [min]": "Tool Wear (min)",
+                "num__Air temperature [K]": "Air Temperature (K)",
+                "num__Process temperature [K]": "Process Temperature (K)",
+                "num__Rotational speed [rpm]": "Rotational Speed (RPM)",
+                "num__Temp_diff": "Temperature Difference (Process Temp − Air Temp)",
+                "num__Torque [Nm]": "Torque (Nm)",
+                "cat__Type_H": "High-Duty Machine",
+                "cat__Type_M": "Medium-Duty Machine",
+                "cat__Type_L": "Low-Duty Machine",
+            }
+
+            shap_df["feature"] = shap_df["feature"].map(lambda x: FEATURE_NAME_MAP.get(x, x))
+
+            # ✅ start from 1
+            shap_df = shap_df.reset_index(drop=True)
+            shap_df.index = range(1, len(shap_df) + 1)
+
+            st.dataframe(shap_df, use_container_width=True)
         else:
             st.info("No SHAP drivers to display yet.")
 
     st.divider()
 
-    st.subheader("Risk Trend (Page 1 Content Product ID)")
+    st.subheader("Machine Risk Trent (Live)")
     hist = pd.DataFrame(st.session_state.history)
     pid_now = sensor.get("Product ID", "N/A")
     hist_pid = hist[hist["product_id"] == pid_now].copy()
@@ -260,12 +285,10 @@ if page == "1) Simulation Dashboard":
 
 
 # ---------------------------
-# PAGE 2: Editable Data Table with DONE button
+# PAGE 2: WHAT-IF Analysis
 # ---------------------------
-elif page == "2) Editable Data Table":
-    st.subheader("Editable Data Table (Excel-like)")
-
-    st.info("Edit values below. Changes are **not applied** until you press **✅ Done**.")
+elif page == "2) WHAT-IF Analysis":
+    st.subheader("Data Table")
 
     if st.session_state.df_edit_draft is None:
         st.session_state.df_edit_draft = df_source.copy()
@@ -275,7 +298,7 @@ elif page == "2) Editable Data Table":
     cols_to_drop = [c for c in FAILURE_COLS if c in df_draft.columns]
     df_view = df_draft.drop(columns=cols_to_drop, errors="ignore")
 
-    preferred_left = [c for c in ["Product ID", "Type"] if c in df_view.columns]
+    preferred_left = [c for c in ["UDI", "Product ID", "Type"] if c in df_view.columns]
     other_cols = [c for c in df_view.columns if c not in preferred_left]
     df_view = df_view[preferred_left + other_cols]
 
@@ -303,14 +326,15 @@ elif page == "2) Editable Data Table":
         st.caption("Press **Done** to apply edits and refresh KPIs/gauge.")
 
     st.divider()
-    st.caption("Page 2 KPIs are driven by **Page 2 Product ID** selector in the sidebar (independent from Page 1).")
-
 
 # ---------------------------
 # PAGE 3: Survival Analysis (KM + Cox)
 # ---------------------------
 else:
-    st.subheader("Survival Analysis (KM + Cox)")
+    st.markdown(
+    "<h1 style='text-align: left;'>Survival Analysis</h1>",
+    unsafe_allow_html=True
+)
 
     if not SURVIVAL_AVAILABLE:
         st.error(
@@ -319,11 +343,6 @@ else:
             "  pip install lifelines matplotlib\n"
         )
         st.stop()
-
-    st.markdown(
-        "**Academic note:** AI4I is not a true time-series dataset. "
-        "We use **Tool wear [min]** as a **proxy time scale** for KM/Cox."
-    )
 
     # Build survival frame from current (possibly edited) dataset
     try:
