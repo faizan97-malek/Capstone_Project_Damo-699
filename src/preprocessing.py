@@ -1,18 +1,7 @@
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-
 def build_preprocessor(df):
-    """
-    Build preprocessing pipeline:
-    - One-hot encode Type
-    - Scale numeric sensor features
-
-    IMPORTANT:
-    We explicitly exclude target/label columns from features,
-    including Machine failure and the individual failure type flags.
-    """
-
     categorical_features = ["Type"]
 
     # Columns that should NEVER be used as features (targets / leakage)

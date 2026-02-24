@@ -5,41 +5,23 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 
-
 @dataclass
 class TTFProxyConfig:
-    """
-    A simple, defendable proxy for 'time-to-failure'.
-
-    Important:
-    - AI4I 2020 does NOT provide true time-to-failure.
-    - This proxy uses session trend + risk + tool wear to estimate a "time-to-risk-event".
-    """
     low_threshold: float = 0.40     # below this = not urgent
     high_threshold: float = 0.70    # above this = urgent
     min_points_for_slope: int = 6   # need enough history to estimate trend
     horizon_minutes: float = 240.0  # cap estimate to avoid crazy numbers
-
 
 def _minutes_since_start(ts_series: pd.Series) -> np.ndarray:
     base = ts_series.iloc[0]
     delta = (ts_series - base).dt.total_seconds() / 60.0
     return delta.to_numpy(dtype=float)
 
-
 def estimate_ttf_proxy(
     history: List[Dict[str, Any]],
     current_sensor: Dict[str, Any],
     config: Optional[TTFProxyConfig] = None
 ) -> Dict[str, Any]:
-    """
-    Returns:
-      {
-        "ttf_proxy_min": float | None,
-        "method": str,
-        "notes": str
-      }
-    """
     config = config or TTFProxyConfig()
 
     if not history or len(history) < 2:

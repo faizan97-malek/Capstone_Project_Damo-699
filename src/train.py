@@ -14,7 +14,6 @@ from src.features import add_engineered_features
 from src.preprocessing import build_preprocessor
 
 def train_model():
-
     print("Loading data...")
     df = load_raw_data()
 

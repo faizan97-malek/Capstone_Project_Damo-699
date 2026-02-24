@@ -1,8 +1,3 @@
-"""Utility functions used by the Streamlit dashboard.
-
-Important: This module is a pure refactor of logic that previously lived in
-`app/streamlit_app.py`. The intent is to keep the dashboard output identical.
-"""
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
@@ -13,20 +8,10 @@ import streamlit as st
 from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
 
-# NOTE: Survival helpers (_df_fingerprint / _fit_cox_cached) live here so
-# app/streamlit_app.py stays clean. These functions are copied from the
-# original streamlit_app.py with NO behavior changes.
-
-# Project root (src/ -> project root)
 ROOT = Path(__file__).resolve().parents[1]
 
-# ---------------------------
 # Matplotlib dark theme helpers (KM/Cox plots)
-# ---------------------------
 def apply_dark_mpl(ax, fig=None):
-    """
-    Makes matplotlib plots look good on Streamlit dark background.
-    """
     if fig is not None:
         fig.patch.set_alpha(0.0)  # transparent figure background
         fig.patch.set_facecolor((0, 0, 0, 0))
@@ -68,14 +53,9 @@ def finalize_fig(fig):
     fig.tight_layout(pad=1.0)
     return fig
 
-
-# ---------------------------
-# Data
-# ---------------------------
 # Preferred project location
 DATA_PATH = ROOT / "data" / "cleaned" / "ai4i2020_cleaned.csv"
 
-# Fallbacks (in case you run directly from a sandbox / different structure)
 FALLBACK_PATHS = [
     ROOT / "ai4i2020_cleaned.csv",
     Path("/mnt/data/ai4i2020_cleaned.csv"),
@@ -109,7 +89,6 @@ def load_cleaned_dataset() -> pd.DataFrame:
     df["Product ID"] = df["Product ID"].astype(str)
     return df
 
-
 def build_sensor_from_row(row: pd.Series) -> dict:
     """Minimal snapshot expected by model + Product ID for UI."""
     return {
@@ -122,10 +101,8 @@ def build_sensor_from_row(row: pd.Series) -> dict:
         "Tool wear [min]": float(row["Tool wear [min]"]),
     }
 
-
 def sensor_table(sensor: dict) -> pd.DataFrame:
     return pd.DataFrame([{"feature": k, "value": v} for k, v in sensor.items()])
-
 
 def make_risk_gauge(prob: float):
     value = float(np.clip(prob * 100.0, 0.0, 100.0))
@@ -146,7 +123,6 @@ def make_risk_gauge(prob: float):
     )
     fig.update_layout(height=320, margin=dict(l=20, r=20, t=50, b=20))
     return fig
-
 
 def make_trend_chart(hist_df: pd.DataFrame, title: str):
     if hist_df.empty:
@@ -174,23 +150,8 @@ def make_trend_chart(hist_df: pd.DataFrame, title: str):
     )
     return fig
 
-
-# ---------------------------
 # Global "Aging" Simulation
-# ---------------------------
 def _init_sim_state():
-    """
-    State:
-      - sim_tick: global tick
-      - base_by_id / drift_by_id / last_tick_by_id / current_by_id: simulation cache
-      - sim_running: start/pause
-      - df_edit: committed editable dataset used by all pages
-      - df_edit_draft: table draft edits (Page 2) waiting for Done
-      - page1_pid: Product ID selector for page 1 (drives KPIs on page 1)
-      - page2_pid: Product ID selector for page 2 (drives KPIs on page 2)
-      - page3_pid: Product ID selector for page 3 (drives KPIs + survival on page 3)  ✅ independent
-      - history: for trends
-    """
     if "sim_tick" not in st.session_state:
         st.session_state.sim_tick = 0
 
@@ -273,7 +234,6 @@ def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Gener
     st.session_state.drift_by_id[product_id] = params
     return params
 
-
 def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dict:
     s = dict(sensor)
 
@@ -302,7 +262,6 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
 
     return s
 
-
 def get_or_create_machine_state(product_id: str, base_sensor: dict) -> dict:
     rng = st.session_state.rng
 
@@ -330,7 +289,6 @@ def get_or_create_machine_state(product_id: str, base_sensor: dict) -> dict:
 
     return cur
 
-
 def reset_simulation():
     st.session_state.sim_tick = 0
     st.session_state.drift_by_id = {}
@@ -338,10 +296,7 @@ def reset_simulation():
     st.session_state.current_by_id = {}
     st.session_state.history = []
 
-
-# ---------------------------
 # Shared (Common) KPI + Gauge block
-# ---------------------------
 def render_common_kpis_and_gauge(sensor: dict, top_k: int):
     model_input = {k: v for k, v in sensor.items() if k != "Product ID"}
     result = predict(model_input)
@@ -368,28 +323,15 @@ def render_common_kpis_and_gauge(sensor: dict, top_k: int):
 
     return risk_prob, shap_drivers
 
-
-# ---------------------------
 # Survival caching helpers (used by Page 3)
-# ---------------------------
 def _df_fingerprint(df: pd.DataFrame) -> str:
-    """Fingerprint a dataframe for caching.
-
-    Copied from the original dashboard code (no behavior change).
-    """
     h = pd.util.hash_pandas_object(df, index=False).values
     return f"{int(h.sum())}_{len(df)}_{len(df.columns)}"
 
 
 @st.cache_resource(show_spinner=False)
 def _fit_cox_cached(df_cox: pd.DataFrame, _fp: str):
-    """Fit Cox model with Streamlit resource caching.
-
-    `_fp` is included to invalidate cache when df_cox changes.
-    Behavior matches the original dashboard.
-    """
     # Import lazily so Page 1/2 don't require lifelines.
     from src.survival_analysis import fit_cox_model
 
     return fit_cox_model(df_cox)
-

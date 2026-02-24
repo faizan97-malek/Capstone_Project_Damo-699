@@ -1,8 +1,6 @@
-# app/streamlit_app.py
 import sys
 from pathlib import Path
 
-# --- ensure project root is on path (so `src.*` imports work when running streamlit) ---
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
@@ -16,7 +14,7 @@ import plotly.graph_objects as go
 from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
 
-# NEW: survival module (KM + Cox)
+# Survival module (KM + Cox)
 SURVIVAL_AVAILABLE = True
 try:
     from src.survival_analysis import (
@@ -31,8 +29,6 @@ try:
     )
 except Exception:
     SURVIVAL_AVAILABLE = False
-
-
 
 # --- dashboard helpers (moved out of this file; behavior preserved) ---
 from src.dashboard_utils import (
@@ -52,8 +48,7 @@ from src.dashboard_utils import (
     _fit_cox_cached,
 )
 
-# App
-# ---------------------------
+# App setup
 st.set_page_config(page_title="Predictive Maintenance Dashboard", layout="wide")
 st.title("Predictive Maintenance Dashboard")
 
@@ -142,7 +137,7 @@ elif page == "2) WHAT-IF Analysis":
     refresh_seconds = 2
     st.session_state.sim_running = False
 
-# Page 3 controls (✅ independent dropdown)
+# Page 3 controls
 else:
     st.sidebar.markdown("---")
     st.sidebar.header("Survival Controls")
@@ -159,10 +154,7 @@ else:
     refresh_seconds = 2
     st.session_state.sim_running = False
 
-
-# ---------------------------
 # Build the sensor that drives the KPIs & gauge (depends on page)
-# ---------------------------
 if page == "1) Simulation Dashboard":
     active_pid = st.session_state.page1_pid
 elif page == "2) WHAT-IF Analysis":
@@ -180,18 +172,12 @@ if page == "1) Simulation Dashboard" and simulate_degradation:
 else:
     kpi_sensor = kpi_base_sensor
 
-
-# ---------------------------
 # COMMON KPIs + Gauge (shown on ALL pages)
-# ---------------------------
 risk_prob, shap_drivers = render_common_kpis_and_gauge(kpi_sensor, top_k=top_k)
 
 st.divider()
 
-
-# ---------------------------
 # PAGE 1: Simulation Dashboard
-# ---------------------------
 if page == "1) Simulation Dashboard":
     st.subheader("Simulation Dashboard")
 
@@ -283,10 +269,7 @@ if page == "1) Simulation Dashboard":
         time.sleep(refresh_seconds)
         st.rerun()
 
-
-# ---------------------------
 # PAGE 2: WHAT-IF Analysis
-# ---------------------------
 elif page == "2) WHAT-IF Analysis":
     st.subheader("Data Table")
 
@@ -327,9 +310,7 @@ elif page == "2) WHAT-IF Analysis":
 
     st.divider()
 
-# ---------------------------
 # PAGE 3: Survival Analysis (KM + Cox)
-# ---------------------------
 else:
     st.markdown(
     "<h1 style='text-align: left;'>Survival Analysis</h1>",
@@ -437,9 +418,7 @@ else:
         except Exception as e:
             st.error(f"KM plot failed: {e}")
 
-    # =========================================
     # RIGHT: Cox (individual) — driven by selected machine dropdown
-    # =========================================
     with col_right:
         st.markdown("### Cox (Individual)")
 

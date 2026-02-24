@@ -6,27 +6,16 @@ import numpy as np
 import pandas as pd
 import shap
 
-
 from src.features import add_engineered_features
 
-
 MODEL_PATH = Path("models") / "best_model.pkl"
-
 
 def _load_pipeline():
     if not MODEL_PATH.exists():
         raise FileNotFoundError("Model not found. Run training first.")
     return joblib.load(MODEL_PATH)
 
-
 def get_top_shap_drivers(sensor_row: dict, top_k: int = 8):
-    """
-    Returns the top SHAP drivers for ONE sensor reading.
-
-    We must add engineered features first, because the saved pipeline was trained
-    with engineered columns like Temp_diff and Torque_RPM_ratio.
-    """
-
     pipeline = _load_pipeline()
 
     # Convert dict → DataFrame

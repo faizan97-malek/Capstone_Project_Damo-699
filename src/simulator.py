@@ -1,5 +1,3 @@
-# src/simulator.py
-
 from __future__ import annotations
 
 import random
@@ -10,12 +8,7 @@ import pandas as pd
 # Cache dataset in memory so we don't re-read it every refresh
 _DATA_CACHE: pd.DataFrame | None = None
 
-
 def _load_dataset() -> pd.DataFrame:
-    """
-    Load AI4I dataset for simulation (prefer cleaned, fallback to raw).
-    Returns a DataFrame that includes Product ID + sensor columns.
-    """
     global _DATA_CACHE
     if _DATA_CACHE is not None:
         return _DATA_CACHE
@@ -70,10 +63,6 @@ def _load_dataset() -> pd.DataFrame:
 
 
 def generate_sensor_state(seed: int | None = None) -> dict:
-    """
-    Sample ONE real row from the dataset and return it as a sensor snapshot.
-    This includes Product ID and matches the model's expected input fields.
-    """
     if seed is not None:
         random.seed(seed)
 
@@ -95,7 +84,6 @@ def generate_sensor_state(seed: int | None = None) -> dict:
         row[k] = float(row[k])
 
     return row
-
 
 if __name__ == "__main__":
     print(generate_sensor_state())

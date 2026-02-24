@@ -12,16 +12,7 @@ if not MODEL_PATH.exists():
 
 model = joblib.load(MODEL_PATH)
 
-
 def predict(sensor_row: dict, wear_penalty_strength: float = 0.0015) -> dict:
-    """
-    Accepts a single sensor snapshot (dict)
-    Returns probability + risk label
-
-    wear_penalty_strength:
-        small additive penalty that increases with tool wear
-        helps make the "risk over time" trend feel realistic
-    """
     df = pd.DataFrame([sensor_row])
     df = add_engineered_features(df)
 
@@ -37,7 +28,6 @@ def predict(sensor_row: dict, wear_penalty_strength: float = 0.0015) -> dict:
         "risk_probability": prob_adj,
         "risk_label": risk_tier(prob_adj, high_threshold=0.7),
     }
-
 
 def compute_ttf_proxy(sensor_row: dict, wear_limit: float = 200.0) -> float:
     tool_wear = float(sensor_row.get("Tool wear [min]", 0))
