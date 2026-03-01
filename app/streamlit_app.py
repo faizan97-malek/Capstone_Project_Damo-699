@@ -200,7 +200,13 @@ if page == "1) Simulation Dashboard":
         page_content_pid = st.session_state.page1_pid
         row = df_source[df_source["Product ID"] == str(page_content_pid)].iloc[0]
         base_sensor = build_sensor_from_row(row)
-        sensor = get_or_create_machine_state(str(page_content_pid), base_sensor) if simulate_degradation else base_sensor
+        if simulate_degradation:
+            if st.session_state.sim_running and auto_refresh:
+                sensor = get_or_create_machine_state(str(page_content_pid), base_sensor)
+            else:
+                sensor = get_or_create_machine_state(str(page_content_pid), base_sensor, step=False)
+        else:
+            sensor = base_sensor
 
     st.session_state.history.append(
         {

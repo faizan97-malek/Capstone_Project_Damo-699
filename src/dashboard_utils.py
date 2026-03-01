@@ -7,6 +7,7 @@ import streamlit as st
 
 from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
+from src.simulator import step_sensor_state
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -102,7 +103,16 @@ def build_sensor_from_row(row: pd.Series) -> dict:
     }
 
 def sensor_table(sensor: dict) -> pd.DataFrame:
-    return pd.DataFrame([{"feature": k, "value": v} for k, v in sensor.items()])
+    # hide internal simulator fields (those starting with "_")
+    clean_sensor = {
+        k: v for k, v in sensor.items()
+        if not k.startswith("_")
+    }
+
+    df = pd.DataFrame(
+        [{"Feature": k, "Value": v} for k, v in clean_sensor.items()]
+    )
+    return df
 
 def make_risk_gauge(prob: float):
     value = float(np.clip(prob * 100.0, 0.0, 100.0))
@@ -152,45 +162,36 @@ def make_trend_chart(hist_df: pd.DataFrame, title: str):
 
 # Global "Aging" Simulation
 def _init_sim_state():
+    if "machines" not in st.session_state:
+        st.session_state.machines = {}  # pid -> {"state": dict, "last_tick": int}
     if "sim_tick" not in st.session_state:
         st.session_state.sim_tick = 0
-
-    if "base_by_id" not in st.session_state:
-        st.session_state.base_by_id = {}
-
-    if "drift_by_id" not in st.session_state:
-        st.session_state.drift_by_id = {}
-
-    if "last_tick_by_id" not in st.session_state:
-        st.session_state.last_tick_by_id = {}
-
-    if "current_by_id" not in st.session_state:
-        st.session_state.current_by_id = {}
-
-    if "rng" not in st.session_state:
-        st.session_state.rng = np.random.default_rng(42)
-
     if "sim_running" not in st.session_state:
         st.session_state.sim_running = False
-
+    if "history" not in st.session_state:
+        st.session_state.history = []
     if "df_edit" not in st.session_state:
         st.session_state.df_edit = None
-
     if "df_edit_draft" not in st.session_state:
         st.session_state.df_edit_draft = None
-
     if "page1_pid" not in st.session_state:
         st.session_state.page1_pid = None
-
     if "page2_pid" not in st.session_state:
         st.session_state.page2_pid = None
-
     if "page3_pid" not in st.session_state:
         st.session_state.page3_pid = None
 
-    if "history" not in st.session_state:
-        st.session_state.history = []
+def _attach_sim_internals(sensor: dict) -> dict:
+    # Keep your existing keys, just add internal state for fluctuation
+    s = dict(sensor)
 
+    # simulator internals (used by step_sensor_state)
+    s.setdefault("_t", 0)
+    s.setdefault("_air_target", float(s["Air temperature [K]"]))
+    s.setdefault("_rpm_base", float(s["Rotational speed [rpm]"]))
+    s.setdefault("_workload", 0.5)
+    s.setdefault("_last_shock", 0.0)
+    return s
 
 def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Generator) -> dict:
     if product_id in st.session_state.drift_by_id:
@@ -262,38 +263,41 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
 
     return s
 
-def get_or_create_machine_state(product_id: str, base_sensor: dict) -> dict:
-    rng = st.session_state.rng
+def get_or_create_machine_state(product_id: str, base_sensor: dict, step: bool = True) -> dict:
+    """
+    Returns the simulated machine state for a given product_id.
+    - Creates state from base_sensor once.
+    - Advances it only when sim_tick increases (and step=True).
+    """
+    machines = st.session_state.machines
+    tick_now = int(st.session_state.sim_tick)
 
-    if product_id not in st.session_state.base_by_id:
-        st.session_state.base_by_id[product_id] = dict(base_sensor)
+    if product_id not in machines:
+        init_state = _attach_sim_internals(base_sensor)
+        machines[product_id] = {"state": init_state, "last_tick": tick_now}
+        return init_state
 
-    if product_id not in st.session_state.current_by_id:
-        st.session_state.current_by_id[product_id] = dict(base_sensor)
+    record = machines[product_id]
+    state = record["state"]
+    last_tick = int(record.get("last_tick", tick_now))
 
-    if product_id not in st.session_state.last_tick_by_id:
-        st.session_state.last_tick_by_id[product_id] = st.session_state.sim_tick
+    if not step:
+        return state
 
-    params = _get_machine_params(product_id, st.session_state.base_by_id[product_id], rng)
-
-    last_tick = st.session_state.last_tick_by_id[product_id]
-    now_tick = st.session_state.sim_tick
-    steps = max(now_tick - last_tick, 0)
-
-    cur = st.session_state.current_by_id[product_id]
+    # advance as many ticks as needed (usually 0 or 1)
+    steps = max(0, tick_now - last_tick)
     for _ in range(steps):
-        cur = _apply_one_tick(cur, params, rng)
+        state = step_sensor_state(state)
 
-    st.session_state.current_by_id[product_id] = cur
-    st.session_state.last_tick_by_id[product_id] = now_tick
+    record["state"] = state
+    record["last_tick"] = tick_now
+    machines[product_id] = record
 
-    return cur
+    return state
 
 def reset_simulation():
+    st.session_state.machines = {}
     st.session_state.sim_tick = 0
-    st.session_state.drift_by_id = {}
-    st.session_state.last_tick_by_id = {}
-    st.session_state.current_by_id = {}
     st.session_state.history = []
 
 # Shared (Common) KPI + Gauge block
