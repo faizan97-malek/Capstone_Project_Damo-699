@@ -114,20 +114,26 @@ def sensor_table(sensor: dict) -> pd.DataFrame:
     )
     return df
 
-def make_risk_gauge(prob: float):
+def make_risk_gauge(prob: float, threshold: float = 0.18):
     value = float(np.clip(prob * 100.0, 0.0, 100.0))
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
             value=value,
+            number={"suffix": "%", "valueformat": ".1f"},
             title={"text": "Failure Risk Gauge (%)"},
             gauge={
                 "axis": {"range": [0, 100]},
                 "steps": [
-                    {"range": [0, 35], "color": "#2ecc71"},
+                    {"range": [0,  35], "color": "#2ecc71"},
                     {"range": [35, 70], "color": "#f1c40f"},
                     {"range": [70, 100], "color": "#e74c3c"},
                 ],
+                "threshold": {
+                    "line": {"color": "white", "width": 3},
+                    "thickness": 0.85,
+                    "value": threshold * 100,
+                },
             },
         )
     )
@@ -180,6 +186,8 @@ def _init_sim_state():
         st.session_state.page2_pid = None
     if "page3_pid" not in st.session_state:
         st.session_state.page3_pid = None
+    if "drift_by_id" not in st.session_state:
+        st.session_state.drift_by_id = {}  # pid -> machine-specific drift params
 
 def _attach_sim_internals(sensor: dict) -> dict:
     # Keep your existing keys, just add internal state for fluctuation
@@ -200,36 +208,36 @@ def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Gener
     mtype = str(base_sensor.get("Type", "M")).upper()
 
     if mtype == "H":
-        wear_range = (1.2, 3.0)
-        torque_mu, torque_sigma = 0.25, 0.55
-        air_mu, air_sigma = 0.08, 0.20
-        proc_mu, proc_sigma = 0.18, 0.30
-        rpm_mu, rpm_sigma = -2.0, 12.0
+        wear_range = (0.3, 0.9)
+        torque_mu, torque_sigma = 0.04, 0.18
+        air_mu, air_sigma = 0.01, 0.06
+        proc_mu, proc_sigma = 0.02, 0.08
+        rpm_mu, rpm_sigma = -0.5, 5.0
     elif mtype == "L":
-        wear_range = (0.4, 1.6)
-        torque_mu, torque_sigma = 0.10, 0.35
-        air_mu, air_sigma = 0.03, 0.14
-        proc_mu, proc_sigma = 0.08, 0.18
-        rpm_mu, rpm_sigma = -1.0, 8.0
+        wear_range = (0.1, 0.5)
+        torque_mu, torque_sigma = 0.02, 0.10
+        air_mu, air_sigma = 0.01, 0.04
+        proc_mu, proc_sigma = 0.01, 0.05
+        rpm_mu, rpm_sigma = -0.3, 3.0
     else:
-        wear_range = (0.7, 2.2)
-        torque_mu, torque_sigma = 0.16, 0.45
-        air_mu, air_sigma = 0.05, 0.16
-        proc_mu, proc_sigma = 0.12, 0.22
-        rpm_mu, rpm_sigma = -1.5, 10.0
+        wear_range = (0.2, 0.7)
+        torque_mu, torque_sigma = 0.03, 0.14
+        air_mu, air_sigma = 0.01, 0.05
+        proc_mu, proc_sigma = 0.01, 0.06
+        rpm_mu, rpm_sigma = -0.4, 4.0
 
     params = {
-        "wear_per_tick": float(rng.uniform(*wear_range)),
-        "air_mu": float(rng.normal(air_mu, 0.02)),
-        "air_sigma": float(rng.uniform(air_sigma * 0.7, air_sigma * 1.1)),
-        "proc_mu": float(rng.normal(proc_mu, 0.04)),
-        "proc_sigma": float(rng.uniform(proc_sigma * 0.7, proc_sigma * 1.2)),
-        "torque_mu": float(rng.normal(torque_mu, 0.06)),
-        "torque_sigma": float(rng.uniform(torque_sigma * 0.7, torque_sigma * 1.2)),
-        "rpm_mu": float(rng.normal(rpm_mu, 0.6)),
-        "rpm_sigma": float(rng.uniform(rpm_sigma * 0.7, rpm_sigma * 1.2)),
-        "wear_heat_gain": float(rng.uniform(0.002, 0.006)),
-        "wear_torque_gain": float(rng.uniform(0.01, 0.03)),
+        "wear_per_tick":    float(rng.uniform(*wear_range)),
+        "air_mu":           float(rng.normal(air_mu, 0.005)),
+        "air_sigma":        float(rng.uniform(air_sigma * 0.7, air_sigma * 1.1)),
+        "proc_mu":          float(rng.normal(proc_mu, 0.005)),
+        "proc_sigma":       float(rng.uniform(proc_sigma * 0.7, proc_sigma * 1.2)),
+        "torque_mu":        float(rng.normal(torque_mu, 0.01)),
+        "torque_sigma":     float(rng.uniform(torque_sigma * 0.7, torque_sigma * 1.2)),
+        "rpm_mu":           float(rng.normal(rpm_mu, 0.2)),
+        "rpm_sigma":        float(rng.uniform(rpm_sigma * 0.7, rpm_sigma * 1.2)),
+        "wear_heat_gain":   float(rng.uniform(0.0002, 0.0008)),
+        "wear_torque_gain": float(rng.uniform(0.001, 0.003)),
     }
 
     st.session_state.drift_by_id[product_id] = params
@@ -255,11 +263,13 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
     rpm_drift = float(rng.normal(params["rpm_mu"], params["rpm_sigma"]))
     s["Rotational speed [rpm]"] = float(s["Rotational speed [rpm]"] + rpm_drift)
 
-    s["Air temperature [K]"] = float(np.clip(s["Air temperature [K]"], 290, 320))
-    s["Process temperature [K]"] = float(np.clip(s["Process temperature [K]"], 295, 335))
-    s["Torque [Nm]"] = float(np.clip(s["Torque [Nm]"], 0, 140))
-    s["Rotational speed [rpm]"] = float(np.clip(s["Rotational speed [rpm]"], 0, 3500))
-    s["Tool wear [min]"] = float(np.clip(s["Tool wear [min]"], 0, 300))
+    # Clip to training data realistic range (p2–p98) so simulator never
+    # generates out-of-distribution inputs that guarantee 100% risk
+    s["Air temperature [K]"]     = float(np.clip(s["Air temperature [K]"],     296.0, 304.0))
+    s["Process temperature [K]"] = float(np.clip(s["Process temperature [K]"], 307.0, 313.5))
+    s["Torque [Nm]"]             = float(np.clip(s["Torque [Nm]"],              10.0,  63.0))
+    s["Rotational speed [rpm]"]  = float(np.clip(s["Rotational speed [rpm]"],  1200.0, 2100.0))
+    s["Tool wear [min]"]         = float(np.clip(s["Tool wear [min]"],            0.0,  260.0))
 
     return s
 
@@ -307,7 +317,9 @@ def render_common_kpis_and_gauge(sensor: dict, top_k: int):
 
     risk_prob = float(result.get("risk_probability", 0.0))
     risk_label = str(result.get("risk_label", "N/A"))
-    ttf_wear = compute_ttf_proxy(model_input)
+    ttf_info = compute_ttf_proxy(model_input)
+    ttf_value = float(ttf_info.get("ttf_min", 0.0))
+    ttf_method = str(ttf_info.get("method", "unknown"))
 
     shap_drivers = []
     try:
@@ -319,11 +331,17 @@ def render_common_kpis_and_gauge(sensor: dict, top_k: int):
     k1.metric("Product ID", sensor.get("Product ID", "N/A"))
     k2.metric("Risk Probability", f"{risk_prob:.2%}")
     k3.metric("Risk Level", risk_label)
-    k4.metric("TTF Proxy (Wear Proxy, min)", f"{ttf_wear:.1f}")
+    k4.metric("TTF (min)", f"{ttf_value:.1f}", help=f"Method: {ttf_method}")
+    if ttf_method == "wear_rule_fallback":
+        k4.caption("⚠️ Fallback estimate")
+    else:
+        k4.caption("✅ Regression model")
+
+    threshold = float(result.get("threshold_used", 0.18))
 
     g1, g2, g3 = st.columns([1, 2, 1])
     with g2:
-        st.plotly_chart(make_risk_gauge(risk_prob), use_container_width=True)
+        st.plotly_chart(make_risk_gauge(risk_prob, threshold=threshold), use_container_width=True)
 
     return risk_prob, shap_drivers
 

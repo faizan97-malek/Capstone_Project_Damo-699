@@ -11,6 +11,13 @@ import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 
+# st.fragment available in Streamlit >= 1.33 — reduces simulation blackout
+try:
+    from streamlit import fragment as st_fragment
+    _HAS_FRAGMENT = True
+except ImportError:
+    _HAS_FRAGMENT = False
+
 from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
 
@@ -236,16 +243,26 @@ if page == "1) Simulation Dashboard":
             shap_df = pd.DataFrame(shap_drivers)
 
             FEATURE_NAME_MAP = {
-                "num__Torque_RPM_ratio": "Mechanical Load Ratio",
-                "num__Tool wear [min]": "Tool Wear (min)",
-                "num__Air temperature [K]": "Air Temperature (K)",
+                "num__Torque_RPM_ratio":        "Mechanical Load Ratio",
+                "num__Tool wear [min]":         "Tool Wear (min)",
+                "num__Air temperature [K]":     "Air Temperature (K)",
                 "num__Process temperature [K]": "Process Temperature (K)",
-                "num__Rotational speed [rpm]": "Rotational Speed (RPM)",
-                "num__Temp_diff": "Temperature Difference (Process Temp − Air Temp)",
-                "num__Torque [Nm]": "Torque (Nm)",
-                "cat__Type_H": "High-Duty Machine",
-                "cat__Type_M": "Medium-Duty Machine",
-                "cat__Type_L": "Low-Duty Machine",
+                "num__Rotational speed [rpm]":  "Rotational Speed (RPM)",
+                "num__Temp_diff":               "Temperature Difference",
+                "num__Torque [Nm]":             "Torque (Nm)",
+                "num__torque_norm":             "Torque (normalised)",
+                "num__wear_norm":               "Wear Ratio",
+                "num__rpm_inv_norm":            "RPM Inverse (normalised)",
+                "cat__Type_H":                  "High-Duty Machine",
+                "cat__Type_M":                  "Medium-Duty Machine",
+                "cat__Type_L":                  "Low-Duty Machine",
+                "Torque_RPM_ratio":             "Mechanical Load Ratio",
+                "Tool wear [min]":              "Tool Wear (min)",
+                "Air temperature [K]":          "Air Temperature (K)",
+                "Process temperature [K]":      "Process Temperature (K)",
+                "Rotational speed [rpm]":       "Rotational Speed (RPM)",
+                "Temp_diff":                    "Temperature Difference",
+                "Torque [Nm]":                  "Torque (Nm)",
             }
 
             shap_df["feature"] = shap_df["feature"].map(lambda x: FEATURE_NAME_MAP.get(x, x))
@@ -260,7 +277,7 @@ if page == "1) Simulation Dashboard":
 
     st.divider()
 
-    st.subheader("Machine Risk Trent (Live)")
+    st.subheader("Machine Risk Trend (Live)")
     hist = pd.DataFrame(st.session_state.history)
     pid_now = sensor.get("Product ID", "N/A")
     hist_pid = hist[hist["product_id"] == pid_now].copy()
@@ -272,7 +289,7 @@ if page == "1) Simulation Dashboard":
         st.plotly_chart(trend_fig, use_container_width=True)
 
     if auto_refresh and st.session_state.sim_running:
-        time.sleep(refresh_seconds)
+        time.sleep(max(0.5, refresh_seconds - 0.3))
         st.rerun()
 
 # PAGE 2: WHAT-IF Analysis
