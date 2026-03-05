@@ -92,7 +92,7 @@ requirements.txt
 
 The dataset contains operational and sensor measurements related to machine performance and failure events. Key variables include:
 
-- Machine type  
+- Machine types
 - Air temperature  
 - Process temperature  
 - Rotational speed  
