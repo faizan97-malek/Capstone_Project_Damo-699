@@ -11,3 +11,8 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+
+# Model files (generated artifacts - run src/train.py and notebook 09 to regenerate)
+models/*.pkl
+models/*.joblib
+models/*.json
