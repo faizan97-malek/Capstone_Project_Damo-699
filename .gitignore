@@ -12,7 +12,18 @@ __pycache__/
 .venv/
 venv/
 
-# Model files (generated artifacts - run src/train.py and notebook 09 to regenerate)
+# Model binaries (large, regenerable)
+# Run: python -m src.train       → best_model.pkl
+# Run: notebook 09               → rul_regressor.joblib
 models/*.pkl
 models/*.joblib
-models/*.json
+
+# Model metadata (small JSON) — DO track these:
+#   eval.json         → evaluation metrics
+#   threshold.json    → tuned decision threshold (required by dashboard)
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
