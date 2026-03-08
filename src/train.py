@@ -176,5 +176,117 @@ def train_model():
     print(f"✅ Threshold saved → {threshold_path}")
 
 
+def train_rul_model():
+    """
+    Train the RUL (Remaining Useful Life) regression model.
+    Replicates the logic from Notebook 09 so that all model artifacts
+    are generated from src/train.py — no notebook execution required.
+    """
+    from sklearn.compose import ColumnTransformer
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    from sklearn.pipeline import Pipeline as SkPipeline
+    from sklearn.linear_model import Ridge
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    from sklearn.model_selection import train_test_split as tts
+
+    print("\n" + "=" * 60)
+    print("Training RUL regression model...")
+    print("=" * 60)
+
+    df = load_raw_data()
+
+    # ── Wear limits per machine type (from NB09 distribution analysis) ──
+    WEAR_LIMIT = {"H": 240, "M": 250, "L": 250}
+
+    df["wear_limit"]     = df["Type"].map(WEAR_LIMIT)
+    df["wear_remaining"] = (df["wear_limit"] - df["Tool wear [min]"]).clip(lower=0)
+
+    # ── Physics-based degradation rate ──
+    df["temp_diff"]   = df["Process temperature [K]"] - df["Air temperature [K]"]
+    df["torque_norm"] = df["Torque [Nm]"]     / df["Torque [Nm]"].max()
+    df["temp_norm"]   = df["temp_diff"]       / df["temp_diff"].max()
+    df["wear_norm"]   = df["Tool wear [min]"] / df["wear_limit"]
+    df["rpm_inv_norm"] = 1 - (df["Rotational speed [rpm]"] / df["Rotational speed [rpm]"].max())
+
+    df["deg_rate"] = (
+        0.35 * df["torque_norm"]
+        + 0.25 * df["wear_norm"]
+        + 0.20 * df["rpm_inv_norm"]
+        + 0.20 * df["temp_norm"]
+    ).clip(lower=0.01)
+
+    # ── Synthetic RUL target ──
+    RUL_CAP = 500
+    df["RUL"] = (df["wear_remaining"] / df["deg_rate"]).clip(upper=RUL_CAP)
+
+    print(f"RUL range: {df['RUL'].min():.1f} — {df['RUL'].max():.1f} minutes")
+    print(f"RUL mean:  {df['RUL'].mean():.1f} minutes")
+
+    # ── Features ──
+    FEATURE_COLS = [
+        "Type",
+        "Air temperature [K]",
+        "Process temperature [K]",
+        "Rotational speed [rpm]",
+        "Torque [Nm]",
+        "Tool wear [min]",
+        "temp_diff",
+        "torque_norm",
+        "wear_norm",
+        "rpm_inv_norm",
+    ]
+
+    X = df[FEATURE_COLS].copy()
+    y = df["RUL"].copy()
+
+    X_train, X_test, y_train, y_test = tts(X, y, test_size=0.2, random_state=42)
+
+    # ── Preprocessing ──
+    cat_cols = ["Type"]
+    num_cols = [c for c in FEATURE_COLS if c != "Type"]
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+            ("num", StandardScaler(), num_cols),
+        ]
+    )
+
+    # ── Train and compare ──
+    regressors = {
+        "Ridge":            Ridge(alpha=1.0),
+        "RandomForest":     RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1),
+        "GradientBoosting": GradientBoostingRegressor(n_estimators=200, random_state=42),
+    }
+
+    best_name, best_pipe, best_mae = None, None, float("inf")
+
+    for name, model in regressors.items():
+        pipe = SkPipeline([("prep", preprocessor), ("model", model)])
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+
+        mae  = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2   = r2_score(y_test, y_pred)
+
+        print(f"  {name:25s}  MAE={mae:.2f}  RMSE={rmse:.2f}  R²={r2:.4f}")
+
+        if mae < best_mae:
+            best_name, best_pipe, best_mae = name, pipe, mae
+
+    # ── Save ──
+    models_dir = Path("models")
+    models_dir.mkdir(exist_ok=True)
+
+    rul_path = models_dir / "rul_regressor.joblib"
+    joblib.dump(best_pipe, rul_path)
+
+    print(f"\n✅ RUL model saved → {rul_path}")
+    print(f"   Selected: {best_name}  (MAE={best_mae:.2f} min)")
+
+
 if __name__ == "__main__":
     train_model()
+    train_rul_model()
