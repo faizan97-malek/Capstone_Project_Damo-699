@@ -20,6 +20,7 @@ except ImportError:
 
 from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
+from src.ttf_trend import estimate_ttf_trend, TrendConfig
 
 # Survival module (KM + Cox)
 SURVIVAL_AVAILABLE = True
@@ -278,12 +279,86 @@ if page == "1) Simulation Dashboard":
     hist = pd.DataFrame(st.session_state.history)
     pid_now = sensor.get("Product ID", "N/A")
     hist_pid = hist[hist["product_id"] == pid_now].copy()
-    trend_fig = make_trend_chart(hist_pid, title=f"Risk Probability Trend — {pid_now}")
 
-    if trend_fig is None:
+    # --- TTF Trend estimation ---
+    trend_result = estimate_ttf_trend(
+        history=st.session_state.history,
+        product_id=pid_now,
+        current_sensor=sensor,
+    )
+
+    # --- TTF Trend KPIs ---
+    t1, t2, t3 = st.columns(3)
+
+    ttc = trend_result.get("ticks_to_critical")
+    slope = trend_result.get("slope_per_tick")
+    method = trend_result.get("method", "N/A")
+
+    t1.metric(
+        "Ticks to Critical",
+        f"{ttc:.0f}" if ttc is not None else "—",
+        help="Estimated simulation ticks until risk crosses 70% (high threshold)",
+    )
+    t2.metric(
+        "Risk Slope / Tick",
+        f"{slope:+.4f}" if slope is not None else "—",
+        help="Rate of risk change per tick (positive = increasing)",
+    )
+    t3.metric(
+        "Trend Method",
+        method.replace("_", " ").title(),
+        help=trend_result.get("notes", ""),
+    )
+
+    # --- Risk trend chart with dynamic y-axis ---
+    if hist_pid.empty or len(hist_pid) < 2:
         st.info("No trend data yet for this Product ID.")
     else:
-        st.plotly_chart(trend_fig, use_container_width=True)
+        hist_plot = hist_pid.sort_values("ts")
+
+        # Dynamic y-axis: pad 10% above max observed risk, floor at 0
+        y_max_raw = hist_plot["risk_probability"].max()
+        y_max = max(0.10, y_max_raw * 1.3)   # at least 10%, or 30% headroom
+        y_max = min(y_max, 1.0)               # never exceed 1.0
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=hist_plot["ts"],
+                y=hist_plot["risk_probability"],
+                mode="lines+markers",
+                name="Risk Probability",
+                line=dict(width=2),
+                marker=dict(size=5),
+            )
+        )
+
+        # Threshold reference line
+        threshold = float(risk_prob) if risk_prob else 0.18
+        try:
+            from src.inference import FINAL_THRESHOLD
+            threshold = float(FINAL_THRESHOLD)
+        except Exception:
+            pass
+
+        fig.add_hline(
+            y=threshold,
+            line_dash="dash",
+            line_color="rgba(231, 76, 60, 0.6)",
+            annotation_text=f"Threshold ({threshold:.0%})",
+            annotation_position="top left",
+            annotation_font_color="rgba(231, 76, 60, 0.8)",
+        )
+
+        fig.update_layout(
+            title=f"Risk Probability Trend — {pid_now}",
+            height=350,
+            margin=dict(l=10, r=10, t=40, b=10),
+            xaxis_title="Time",
+            yaxis_title="Risk Probability",
+            yaxis=dict(range=[0, y_max], tickformat=".1%"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
     if auto_refresh and st.session_state.sim_running:
         time.sleep(max(0.5, refresh_seconds - 0.3))
@@ -505,11 +580,11 @@ else:
             st.pyplot(fig_ind, use_container_width=True)
 
             # Optional: keep these compact
-            with st.expander("Show hazard ratios table (optional)"):
+            with st.expander("Hazard Ratios Table"):
                 hr = get_cox_hazard_ratios(cph, sort=True, ascending=False)
                 st.dataframe(hr, use_container_width=True)
 
-            with st.expander("Show Cox coefficients (optional)"):
+            with st.expander("Cox Coefficients (Log Hazard)"):
                 fig_coef, axc = plot_cox_coefficients(cph, title="Cox Coefficients (log hazard)")
                 apply_dark_mpl(axc, fig_coef)
                 finalize_fig(fig_coef)

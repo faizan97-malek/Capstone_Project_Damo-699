@@ -107,7 +107,7 @@ def train_model():
     #
     # We scan the Precision-Recall curve and select the threshold that
     # achieves recall >= 0.95 with the highest possible precision.
-    # For Soft Voting on this dataset this consistently lands near 0.18:
+    # For Soft Voting on this dataset this consistently lands near 0.02:
     #   - Recall:    ~0.956  (catches 95.6% of real failures)
     #   - Precision: ~0.300  (30% of flagged machines are real failures)
     #   - False alarms: ~152 out of 1932 safe machines (8%)
