@@ -11,7 +11,7 @@ import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 
-# st.fragment available in Streamlit >= 1.33 — reduces simulation blackout
+# We need fragments to reduce flickering during simulation refreshes
 try:
     from streamlit import fragment as st_fragment
     _HAS_FRAGMENT = True
@@ -22,7 +22,8 @@ from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
 from src.ttf_trend import estimate_ttf_trend, TrendConfig
 
-# Survival module (KM + Cox)
+# We try to import the survival module here so page 3 works
+# If lifelines is not installed, we disable page 3 gracefully
 SURVIVAL_AVAILABLE = True
 try:
     from src.survival_analysis import (
@@ -38,7 +39,6 @@ try:
 except Exception:
     SURVIVAL_AVAILABLE = False
 
-# --- dashboard helpers (moved out of this file; behavior preserved) ---
 from src.dashboard_utils import (
     FAILURE_COLS,
     apply_dark_mpl,
@@ -50,30 +50,29 @@ from src.dashboard_utils import (
     make_trend_chart,
     _init_sim_state,
     get_or_create_machine_state,
+    step_all_machines,
     reset_simulation,
     render_common_kpis_and_gauge,
     _df_fingerprint,
     _fit_cox_cached,
 )
 
-# App setup
 st.set_page_config(page_title="Predictive Maintenance Dashboard", layout="wide")
 st.title("Predictive Maintenance Dashboard")
 
 df_all = load_cleaned_dataset()
 _init_sim_state()
 
-# committed dataset used everywhere
+# We use a working copy of the dataset so page 2 edits dont affect the original
 if st.session_state.df_edit is None:
     st.session_state.df_edit = df_all.copy()
 
 df_source = st.session_state.df_edit
 
-# product ids
 product_ids = df_source["Product ID"].unique().tolist()
 product_ids.sort()
 
-# default independent selectors
+# We set default product IDs for each page so they dont start as None
 if st.session_state.page1_pid is None and product_ids:
     st.session_state.page1_pid = product_ids[0]
 if st.session_state.page2_pid is None and product_ids:
@@ -81,7 +80,7 @@ if st.session_state.page2_pid is None and product_ids:
 if st.session_state.page3_pid is None and product_ids:
     st.session_state.page3_pid = product_ids[0]
 
-# Navigation
+# Sidebar navigation
 st.sidebar.header("Navigation")
 page = st.sidebar.radio(
     "Go to",
@@ -89,11 +88,10 @@ page = st.sidebar.radio(
     index=0,
 )
 
-# Common SHAP control
 st.sidebar.markdown("---")
 top_k = st.sidebar.slider("Top SHAP drivers to show", 3, 10, 5)
 
-# Page 1 controls
+# Page 1 sidebar controls
 if page == "1) Simulation Dashboard":
     st.sidebar.markdown("---")
     st.sidebar.header("Simulation Controls")
@@ -107,28 +105,25 @@ if page == "1) Simulation Dashboard":
 
     c1, c2 = st.sidebar.columns(2)
     with c1:
-        if st.button("▶️ Start", use_container_width=True):
+        if st.button("Start", use_container_width=True):
             st.session_state.sim_running = True
             st.rerun()
     with c2:
-        if st.button("⏸️ Pause", use_container_width=True):
+        if st.button("Pause", use_container_width=True):
             st.session_state.sim_running = False
             st.rerun()
 
-    st.sidebar.caption(
-        f"Simulation status: {'🟢 Running' if st.session_state.sim_running else '🔴 Paused'}"
-    )
+    status = "Running" if st.session_state.sim_running else "Paused"
+    st.sidebar.caption(f"Simulation status: {status}")
 
     refresh_seconds = st.sidebar.slider("Refresh interval (seconds)", 1, 10, 2)
-    simulate_degradation = st.sidebar.toggle("Simulate degradation (aging)", value=True)
-    auto_refresh = st.sidebar.toggle("Auto-refresh", value=True)
 
-    if st.sidebar.button("Reset simulation (all machines)"):
+    if st.sidebar.button("Reset simulation"):
         reset_simulation()
         st.success("Simulation reset. All machines are back to original dataset values.")
         st.rerun()
 
-# Page 2 controls
+# Page 2 sidebar controls
 elif page == "2) WHAT-IF Analysis":
     st.sidebar.markdown("---")
     st.sidebar.header("Table Controls")
@@ -140,12 +135,10 @@ elif page == "2) WHAT-IF Analysis":
         key="page2_pid_selectbox",
     )
 
-    simulate_degradation = False
-    auto_refresh = False
     refresh_seconds = 2
     st.session_state.sim_running = False
 
-# Page 3 controls
+# Page 3 sidebar controls
 else:
     st.sidebar.markdown("---")
     st.sidebar.header("Survival Controls")
@@ -157,12 +150,10 @@ else:
         key="page3_pid_selectbox",
     )
 
-    simulate_degradation = False
-    auto_refresh = False
     refresh_seconds = 2
     st.session_state.sim_running = False
 
-# Build the sensor that drives the KPIs & gauge (depends on page)
+# We pick the active product ID based on which page the user is on
 if page == "1) Simulation Dashboard":
     active_pid = st.session_state.page1_pid
 elif page == "2) WHAT-IF Analysis":
@@ -173,49 +164,34 @@ else:
 kpi_row = df_source[df_source["Product ID"] == str(active_pid)].iloc[0]
 kpi_base_sensor = build_sensor_from_row(kpi_row)
 
-if page == "1) Simulation Dashboard" and simulate_degradation:
-    if st.session_state.sim_running and auto_refresh:
+# We advance all machines together so switching product IDs shows correct state
+if page == "1) Simulation Dashboard":
+    if st.session_state.sim_running:
         st.session_state.sim_tick += 1
+        step_all_machines(df_source)
     kpi_sensor = get_or_create_machine_state(str(active_pid), kpi_base_sensor)
 else:
     kpi_sensor = kpi_base_sensor
 
-# COMMON KPIs + Gauge (shown on ALL pages)
+# KPIs and gauge are shown on every page
 risk_prob, shap_drivers = render_common_kpis_and_gauge(kpi_sensor, top_k=top_k)
 
 st.divider()
 
-# PAGE 1: Simulation Dashboard
+
+# Page 1: Simulation Dashboard
 if page == "1) Simulation Dashboard":
     st.subheader("Simulation Dashboard")
 
-    mode = st.sidebar.radio(
-        "Evaluation mode (page content)",
-        ["Random Live (dataset sampling)", "Select Product ID (dataset snapshot)"],
-        index=1,
-        key="page1_mode",
-    )
-
-    if mode == "Random Live (dataset sampling)":
-        row = df_source.sample(1).iloc[0]
-        base_sensor = build_sensor_from_row(row)
-        sensor = base_sensor
-
-        if simulate_degradation and st.session_state.sim_running and auto_refresh:
-            sensor = get_or_create_machine_state(sensor["Product ID"], base_sensor)
-
+    page_content_pid = st.session_state.page1_pid
+    row = df_source[df_source["Product ID"] == str(page_content_pid)].iloc[0]
+    base_sensor = build_sensor_from_row(row)
+    if st.session_state.sim_running:
+        sensor = get_or_create_machine_state(str(page_content_pid), base_sensor)
     else:
-        page_content_pid = st.session_state.page1_pid
-        row = df_source[df_source["Product ID"] == str(page_content_pid)].iloc[0]
-        base_sensor = build_sensor_from_row(row)
-        if simulate_degradation:
-            if st.session_state.sim_running and auto_refresh:
-                sensor = get_or_create_machine_state(str(page_content_pid), base_sensor)
-            else:
-                sensor = get_or_create_machine_state(str(page_content_pid), base_sensor, step=False)
-        else:
-            sensor = base_sensor
+        sensor = get_or_create_machine_state(str(page_content_pid), base_sensor, step=False)
 
+    # We save each tick to history so we can plot the risk trend over time
     st.session_state.history.append(
         {
             "ts": pd.Timestamp.now(),
@@ -231,18 +207,17 @@ if page == "1) Simulation Dashboard":
         st.subheader("Live Sensor Readings")
 
         df_sensor = sensor_table(sensor)
-
-        # add professional numbering
         df_sensor = df_sensor.reset_index(drop=True)
         df_sensor.index = range(1, len(df_sensor) + 1)
 
-        st.dataframe(df_sensor, use_container_width=True,)
+        st.dataframe(df_sensor, use_container_width=True)
 
     with right:
         st.subheader("Key Risk Drivers (SHAP Analysis)")
         if shap_drivers:
             shap_df = pd.DataFrame(shap_drivers)
 
+            # We rename raw feature names to readable labels for the operator
             FEATURE_NAME_MAP = {
                 "num__Torque_RPM_ratio":        "Mechanical Load Ratio",
                 "num__Tool wear [min]":         "Tool Wear (min)",
@@ -265,7 +240,6 @@ if page == "1) Simulation Dashboard":
 
             shap_df["feature"] = shap_df["feature"].map(lambda x: FEATURE_NAME_MAP.get(x, x))
 
-            # ✅ start from 1
             shap_df = shap_df.reset_index(drop=True)
             shap_df.index = range(1, len(shap_df) + 1)
 
@@ -280,14 +254,13 @@ if page == "1) Simulation Dashboard":
     pid_now = sensor.get("Product ID", "N/A")
     hist_pid = hist[hist["product_id"] == pid_now].copy()
 
-    # --- TTF Trend estimation ---
+    # We estimate how many ticks remain before this machine reaches critical risk
     trend_result = estimate_ttf_trend(
         history=st.session_state.history,
         product_id=pid_now,
         current_sensor=sensor,
     )
 
-    # --- TTF Trend KPIs ---
     t1, t2, t3 = st.columns(3)
 
     ttc = trend_result.get("ticks_to_critical")
@@ -296,12 +269,12 @@ if page == "1) Simulation Dashboard":
 
     t1.metric(
         "Ticks to Critical",
-        f"{ttc:.0f}" if ttc is not None else "—",
-        help="Estimated simulation ticks until risk crosses 70% (high threshold)",
+        f"{ttc:.0f}" if ttc is not None else "-",
+        help="Estimated simulation ticks until risk crosses 70%",
     )
     t2.metric(
         "Risk Slope / Tick",
-        f"{slope:+.4f}" if slope is not None else "—",
+        f"{slope:+.4f}" if slope is not None else "-",
         help="Rate of risk change per tick (positive = increasing)",
     )
     t3.metric(
@@ -310,16 +283,16 @@ if page == "1) Simulation Dashboard":
         help=trend_result.get("notes", ""),
     )
 
-    # --- Risk trend chart with dynamic y-axis ---
+    # We need at least 2 data points to draw a trend line
     if hist_pid.empty or len(hist_pid) < 2:
         st.info("No trend data yet for this Product ID.")
     else:
         hist_plot = hist_pid.sort_values("ts")
 
-        # Dynamic y-axis: pad 10% above max observed risk, floor at 0
+        # We scale the y-axis dynamically so low-risk machines dont have a flat line at the bottom
         y_max_raw = hist_plot["risk_probability"].max()
-        y_max = max(0.10, y_max_raw * 1.3)   # at least 10%, or 30% headroom
-        y_max = min(y_max, 1.0)               # never exceed 1.0
+        y_max = max(0.10, y_max_raw * 1.3)
+        y_max = min(y_max, 1.0)
 
         fig = go.Figure()
         fig.add_trace(
@@ -333,7 +306,7 @@ if page == "1) Simulation Dashboard":
             )
         )
 
-        # Threshold reference line
+        # We show the decision threshold as a reference line on the chart
         threshold = float(risk_prob) if risk_prob else 0.18
         try:
             from src.inference import FINAL_THRESHOLD
@@ -351,7 +324,7 @@ if page == "1) Simulation Dashboard":
         )
 
         fig.update_layout(
-            title=f"Risk Probability Trend — {pid_now}",
+            title=f"Risk Probability Trend - {pid_now}",
             height=350,
             margin=dict(l=10, r=10, t=40, b=10),
             xaxis_title="Time",
@@ -360,11 +333,79 @@ if page == "1) Simulation Dashboard":
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    if auto_refresh and st.session_state.sim_running:
+    # We show a table of all machines that have crossed into high risk territory
+    # so operators can see which machines need immediate attention
+    st.divider()
+    st.subheader("High Risk Alerts")
+
+    machines = st.session_state.machines
+    if machines:
+        from src.features import add_engineered_features as _add_feat
+
+        # We collect all machine states into a single dataframe for batch prediction
+        # because calling predict() on each machine individually would be too slow
+        batch_rows = []
+        batch_pids = []
+        for pid, record in machines.items():
+            state = record["state"]
+            batch_pids.append(pid)
+            batch_rows.append({
+                "Type": state.get("Type", "M"),
+                "Air temperature [K]": float(state.get("Air temperature [K]", 0)),
+                "Process temperature [K]": float(state.get("Process temperature [K]", 0)),
+                "Rotational speed [rpm]": float(state.get("Rotational speed [rpm]", 0)),
+                "Torque [Nm]": float(state.get("Torque [Nm]", 0)),
+                "Tool wear [min]": float(state.get("Tool wear [min]", 0)),
+            })
+
+        if batch_rows:
+            try:
+                import src.inference as _inf
+                _inf._load_models()
+
+                df_batch = pd.DataFrame(batch_rows)
+                df_batch = _add_feat(df_batch)
+                probs = _inf._model.predict_proba(df_batch)[:, 1]
+
+                # We only show machines above 70% because that matches the gauge red zone
+                alert_rows = []
+                for i, (pid, prob) in enumerate(zip(batch_pids, probs)):
+                    if prob >= 0.70:
+                        r = batch_rows[i]
+                        ttf_info = compute_ttf_proxy(r)
+                        alert_rows.append({
+                            "Product ID": pid,
+                            "Type": r["Type"],
+                            "Risk Probability": f"{prob:.1%}",
+                            "Risk Level": "High",
+                            "TTF (min)": f"{ttf_info.get('ttf_min', 0):.1f}",
+                            "Air Temp [K]": f"{r['Air temperature [K]']:.1f}",
+                            "Torque [Nm]": f"{r['Torque [Nm]']:.1f}",
+                            "RPM": f"{r['Rotational speed [rpm]']:.0f}",
+                            "Tool Wear [min]": f"{r['Tool wear [min]']:.1f}",
+                        })
+
+                if alert_rows:
+                    df_alerts = pd.DataFrame(alert_rows)
+                    df_alerts = df_alerts.sort_values("Risk Probability", ascending=False).reset_index(drop=True)
+                    df_alerts.index = range(1, len(df_alerts) + 1)
+                    st.dataframe(df_alerts, use_container_width=True)
+                    st.caption(f"{len(alert_rows)} machine(s) at High risk (>= 70% failure probability)")
+                else:
+                    st.info("No machines at High risk level currently.")
+            except Exception as e:
+                st.warning(f"Could not compute fleet risk: {e}")
+        else:
+            st.info("No machines initialized yet.")
+    else:
+        st.info("Start the simulation to monitor machine risk levels.")
+
+    if st.session_state.sim_running:
         time.sleep(max(0.5, refresh_seconds - 0.3))
         st.rerun()
 
-# PAGE 2: WHAT-IF Analysis
+
+# Page 2: WHAT-IF Analysis
 elif page == "2) WHAT-IF Analysis":
     st.subheader("Data Table")
 
@@ -373,9 +414,11 @@ elif page == "2) WHAT-IF Analysis":
 
     df_draft = st.session_state.df_edit_draft
 
+    # We hide failure columns from the editor because they would be leakage
     cols_to_drop = [c for c in FAILURE_COLS if c in df_draft.columns]
     df_view = df_draft.drop(columns=cols_to_drop, errors="ignore")
 
+    # We put the ID columns first so the table is easier to read
     preferred_left = [c for c in ["UDI", "Product ID", "Type"] if c in df_view.columns]
     other_cols = [c for c in df_view.columns if c not in preferred_left]
     df_view = df_view[preferred_left + other_cols]
@@ -388,7 +431,7 @@ elif page == "2) WHAT-IF Analysis":
         key="data_editor_all",
     )
 
-    # Update draft only
+    # We only update the draft here so changes arent applied until the user clicks Done
     df_updated_draft = df_draft.copy()
     for col in edited_df_view.columns:
         df_updated_draft[col] = edited_df_view[col]
@@ -396,35 +439,36 @@ elif page == "2) WHAT-IF Analysis":
 
     c1, c2 = st.columns([1, 6])
     with c1:
-        if st.button("✅ Done", use_container_width=True):
+        if st.button("Done", use_container_width=True):
             st.session_state.df_edit = st.session_state.df_edit_draft.copy()
-            st.success("Edits applied. KPIs & gauge updated.")
+            st.success("Edits applied. KPIs and gauge updated.")
             st.rerun()
     with c2:
-        st.caption("Press **Done** to apply edits and refresh KPIs/gauge.")
+        st.caption("Press Done to apply edits and refresh KPIs/gauge.")
 
     st.divider()
 
-# PAGE 3: Survival Analysis (KM + Cox)
+
+# Page 3: Survival Analysis (KM + Cox)
 else:
     st.markdown(
-    "<h1 style='text-align: left;'>Survival Analysis</h1>",
-    unsafe_allow_html=True
-)
+        "<h1 style='text-align: left;'>Survival Analysis</h1>",
+        unsafe_allow_html=True,
+    )
 
     if not SURVIVAL_AVAILABLE:
         st.error(
             "Survival module not available.\n\n"
-            "Make sure you created `src/survival_analysis.py` and installed dependencies:\n"
+            "Make sure you created src/survival_analysis.py and installed dependencies:\n"
             "  pip install lifelines matplotlib\n"
         )
         st.stop()
 
-    # Build survival frame from current (possibly edited) dataset
+    # We build the survival frame from the current dataset which may have been edited on page 2
     try:
         spec = SurvivalSpec(
             duration_col="Tool wear [min]",
-            event_col="Machine failure",  # if missing, module falls back to flags
+            event_col="Machine failure",
             group_col="Type",
         )
         df_surv = build_survival_frame(df_source, spec=spec)
@@ -432,23 +476,19 @@ else:
         st.error(f"Could not build survival dataset: {e}")
         st.stop()
 
-    # Selected machine row (for Cox only)
     selected_pid = str(st.session_state.page3_pid)
     selected_row = df_source[df_source["Product ID"] == selected_pid].iloc[0]
 
-    # Wear bins (for KM cohort filtering UI)
+    # We create wear bins so users can filter KM curves by tool wear ranges
     bin_edges = [0, 50, 100, 150, 200, 250, 300, float("inf")]
     bin_labels = ["0-50", "50-100", "100-150", "150-200", "200-250", "250-300", "300+"]
 
     df_surv = df_surv.copy()
     df_surv["wear_bin"] = pd.cut(df_surv["duration"], bins=bin_edges, labels=bin_labels, right=False)
 
-    # ---- Clean layout: KM left, Cox right ----
     col_left, col_right = st.columns(2)
 
-    # =========================================
-    # LEFT: KM (cohort) — ONLY controlled by KM controls
-    # =========================================
+    # Left panel: KM survival curves filtered by cohort
     with col_left:
         st.markdown("### KM (Cohort)")
 
@@ -469,7 +509,7 @@ else:
         if km_cohort_mode in ["Wear bin only", "Type + Wear bin"]:
             chosen_bin = st.selectbox("KM Wear bin", bin_labels, index=0, key="km_wearbin_selector_page3")
 
-        # Apply KM cohort filtering (NO selected machine used here)
+        # We filter the survival dataframe based on user selections
         df_km = df_surv.copy()
 
         if km_cohort_mode == "Type only":
@@ -483,7 +523,7 @@ else:
             ].copy()
 
         if len(df_km) < 30:
-            st.warning(f"Small cohort (n={len(df_km)}). KM is population-based; small cohorts can look unstable.")
+            st.warning(f"Small cohort (n={len(df_km)}). KM curves may be unstable with few observations.")
 
         try:
             km_cohort = fit_kaplan_meier(df_km["duration"], df_km["event"], label="KM (cohort)")
@@ -494,7 +534,6 @@ else:
                 ylabel="Survival probability",
             )
 
-            # Optional marker (does NOT change the curve)
             show_marker = st.toggle(
                 "Show selected machine wear marker",
                 value=False,
@@ -504,7 +543,6 @@ else:
                 selected_wear = float(selected_row["Tool wear [min]"])
                 ax.axvline(selected_wear, linestyle="--")
 
-            # Dark theme + alignment
             apply_dark_mpl(ax, fig_km)
             finalize_fig(fig_km)
 
@@ -513,7 +551,7 @@ else:
         except Exception as e:
             st.error(f"KM plot failed: {e}")
 
-    # RIGHT: Cox (individual) — driven by selected machine dropdown
+    # Right panel: Cox predicted survival for the selected individual machine
     with col_right:
         st.markdown("### Cox (Individual)")
 
@@ -531,11 +569,10 @@ else:
         ]
 
         try:
-            # Fit Cox on the selected machine's cohort so outputs change with the dropdown
+            # We fit Cox on the selected machines type so the results are type-specific
             selected_type = str(selected_row["Type"])
             df_surv_cox = df_surv[df_surv["Type"].astype(str) == selected_type].copy()
 
-            # Optional safety warning (doesn't change layout)
             if len(df_surv_cox) < 50:
                 st.warning(f"Small Cox cohort for Type={selected_type} (n={len(df_surv_cox)}). Coefficients may be unstable.")
 
@@ -546,12 +583,12 @@ else:
                 duration_col="duration",
                 event_col="event",
                 drop_first=True,
-)
+            )
 
             fp = _df_fingerprint(df_cox)
             cph = _fit_cox_cached(df_cox, fp)
 
-            # Individual predicted survival curve for selected machine
+            # We build a single-row dataframe for the selected machine to predict its survival curve
             one = pd.DataFrame([{
                 "Air temperature [K]": float(selected_row["Air temperature [K]"]),
                 "Process temperature [K]": float(selected_row["Process temperature [K]"]),
@@ -573,13 +610,11 @@ else:
             ax2.set_xlabel("Tool wear [min] (proxy time)")
             ax2.set_ylabel("Survival probability")
 
-            # Dark theme + alignment
             apply_dark_mpl(ax2, fig_ind)
             finalize_fig(fig_ind)
 
             st.pyplot(fig_ind, use_container_width=True)
 
-            # Optional: keep these compact
             with st.expander("Hazard Ratios Table"):
                 hr = get_cox_hazard_ratios(cph, sort=True, ascending=False)
                 st.dataframe(hr, use_container_width=True)

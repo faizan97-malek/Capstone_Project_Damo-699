@@ -310,6 +310,37 @@ def reset_simulation():
     st.session_state.sim_tick = 0
     st.session_state.history = []
 
+
+def step_all_machines(df_source: pd.DataFrame):
+    """
+    Advance ALL machines in the dataset by one tick.
+    Machines not yet initialized are created from their dataset row.
+    Already-initialized machines catch up to the current sim_tick.
+    """
+    tick_now = int(st.session_state.sim_tick)
+    machines = st.session_state.machines
+
+    for _, row in df_source.iterrows():
+        pid = str(row["Product ID"])
+
+        if pid not in machines:
+            base = build_sensor_from_row(row)
+            init_state = _attach_sim_internals(base)
+            machines[pid] = {"state": init_state, "last_tick": tick_now}
+            continue
+
+        record = machines[pid]
+        state = record["state"]
+        last_tick = int(record.get("last_tick", tick_now))
+
+        steps = max(0, tick_now - last_tick)
+        for _ in range(steps):
+            state = step_sensor_state(state)
+
+        record["state"] = state
+        record["last_tick"] = tick_now
+        machines[pid] = record
+
 # Shared (Common) KPI + Gauge block
 def render_common_kpis_and_gauge(sensor: dict, top_k: int):
     model_input = {k: v for k, v in sensor.items() if k != "Product ID"}
