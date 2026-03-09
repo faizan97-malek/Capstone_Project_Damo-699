@@ -11,16 +11,19 @@ from src.simulator import step_sensor_state
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Matplotlib dark theme helpers (KM/Cox plots)
+
+# We created these helper functions because the KM and Cox plots on page 3
+# use matplotlib which defaults to a white background. Since our dashboard
+# uses Streamlit dark mode, we need to override the colors manually so the
+# charts dont look out of place.
+
 def apply_dark_mpl(ax, fig=None):
     if fig is not None:
-        fig.patch.set_alpha(0.0)  # transparent figure background
+        fig.patch.set_alpha(0.0)
         fig.patch.set_facecolor((0, 0, 0, 0))
 
-    # transparent axes background
     ax.set_facecolor((0, 0, 0, 0))
 
-    # light text
     ax.title.set_color("white")
     ax.xaxis.label.set_color("white")
     ax.yaxis.label.set_color("white")
@@ -28,15 +31,12 @@ def apply_dark_mpl(ax, fig=None):
     ax.tick_params(axis="x", colors="white")
     ax.tick_params(axis="y", colors="white")
 
-    # light spines
     for spine in ax.spines.values():
         spine.set_color("white")
         spine.set_alpha(0.35)
 
-    # subtle grid
     ax.grid(True, alpha=0.18)
 
-    # legend
     leg = ax.get_legend()
     if leg is not None:
         frame = leg.get_frame()
@@ -47,14 +47,16 @@ def apply_dark_mpl(ax, fig=None):
 
 
 def finalize_fig(fig):
-    """
-    Standardizes sizing/padding so KM and Cox align.
-    """
-    fig.set_size_inches(6.0, 4.0)  # same for both plots
+    # We standardize the figure size here because the KM and Cox plots
+    # were rendering at different heights which made the layout uneven.
+    fig.set_size_inches(6.0, 4.0)
     fig.tight_layout(pad=1.0)
     return fig
 
-# Preferred project location
+
+# We define the dataset path here so every function in this module
+# reads from the same location. The fallback paths exist because
+# team members have different folder structures on their machines.
 DATA_PATH = ROOT / "data" / "cleaned" / "ai4i2020_cleaned.csv"
 
 FALLBACK_PATHS = [
@@ -62,7 +64,9 @@ FALLBACK_PATHS = [
     Path("/mnt/data/ai4i2020_cleaned.csv"),
 ]
 
-# Columns you DO NOT want in Page 2 table
+# We exclude these columns from the page 2 editor because they are
+# either the target variable or failure mode flags that would cause
+# data leakage if an operator edited them.
 FAILURE_COLS = ["Machine failure", "TWF", "HDF", "PWF", "OSF", "RNF"]
 
 
@@ -83,15 +87,18 @@ def load_cleaned_dataset() -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    # Some versions use "UDI" instead of "Product ID"
+    # We handle this rename because some older versions of the cleaned
+    # CSV used UDI as the identifier column instead of Product ID.
     if "Product ID" not in df.columns and "UDI" in df.columns:
         df = df.rename(columns={"UDI": "Product ID"})
 
     df["Product ID"] = df["Product ID"].astype(str)
     return df
 
+
 def build_sensor_from_row(row: pd.Series) -> dict:
-    """Minimal snapshot expected by model + Product ID for UI."""
+    # We extract only the columns that the model expects as input,
+    # plus Product ID for display purposes in the dashboard.
     return {
         "Product ID": str(row["Product ID"]),
         "Type": str(row["Type"]),
@@ -102,8 +109,10 @@ def build_sensor_from_row(row: pd.Series) -> dict:
         "Tool wear [min]": float(row["Tool wear [min]"]),
     }
 
+
 def sensor_table(sensor: dict) -> pd.DataFrame:
-    # hide internal simulator fields (those starting with "_")
+    # We filter out keys starting with underscore because those are
+    # internal simulator fields that would confuse the operator.
     clean_sensor = {
         k: v for k, v in sensor.items()
         if not k.startswith("_")
@@ -114,7 +123,11 @@ def sensor_table(sensor: dict) -> pd.DataFrame:
     )
     return df
 
+
 def make_risk_gauge(prob: float, threshold: float = 0.18):
+    # We chose 35/70 as the gauge color boundaries because they divide
+    # the 0-100% range into three visually meaningful zones. The white
+    # threshold line shows where the models decision boundary sits.
     value = float(np.clip(prob * 100.0, 0.0, 100.0))
     fig = go.Figure(
         go.Indicator(
@@ -139,6 +152,7 @@ def make_risk_gauge(prob: float, threshold: float = 0.18):
     )
     fig.update_layout(height=320, margin=dict(l=20, r=20, t=50, b=20))
     return fig
+
 
 def make_trend_chart(hist_df: pd.DataFrame, title: str):
     if hist_df.empty:
@@ -166,10 +180,12 @@ def make_trend_chart(hist_df: pd.DataFrame, title: str):
     )
     return fig
 
-# Global "Aging" Simulation
+
+# We initialize all session state keys in one place so the app doesnt
+# crash with KeyError on the first load. Each key has a sensible default.
 def _init_sim_state():
     if "machines" not in st.session_state:
-        st.session_state.machines = {}  # pid -> {"state": dict, "last_tick": int}
+        st.session_state.machines = {}
     if "sim_tick" not in st.session_state:
         st.session_state.sim_tick = 0
     if "sim_running" not in st.session_state:
@@ -187,13 +203,14 @@ def _init_sim_state():
     if "page3_pid" not in st.session_state:
         st.session_state.page3_pid = None
     if "drift_by_id" not in st.session_state:
-        st.session_state.drift_by_id = {}  # pid -> machine-specific drift params
+        st.session_state.drift_by_id = {}
+
 
 def _attach_sim_internals(sensor: dict) -> dict:
-    # Keep your existing keys, just add internal state for fluctuation
+    # We add these hidden fields because the simulator needs to track
+    # internal state like workload cycles and temperature targets between
+    # ticks, but we dont want them showing up in the sensor table.
     s = dict(sensor)
-
-    # simulator internals (used by step_sensor_state)
     s.setdefault("_t", 0)
     s.setdefault("_air_target", float(s["Air temperature [K]"]))
     s.setdefault("_rpm_base", float(s["Rotational speed [rpm]"]))
@@ -201,12 +218,19 @@ def _attach_sim_internals(sensor: dict) -> dict:
     s.setdefault("_last_shock", 0.0)
     return s
 
+
 def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Generator) -> dict:
+    # We cache drift parameters per machine so each product ID has
+    # consistent degradation behavior across the entire simulation.
+    # Without this, the same machine would drift differently each tick.
     if product_id in st.session_state.drift_by_id:
         return st.session_state.drift_by_id[product_id]
 
     mtype = str(base_sensor.get("Type", "M")).upper()
 
+    # We use different drift ranges per type because Type H machines
+    # are high-quality and degrade faster under stress, while Type L
+    # machines are low-quality with gentler operating conditions.
     if mtype == "H":
         wear_range = (0.3, 0.9)
         torque_mu, torque_sigma = 0.04, 0.18
@@ -243,6 +267,7 @@ def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Gener
     st.session_state.drift_by_id[product_id] = params
     return params
 
+
 def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dict:
     s = dict(sensor)
 
@@ -252,6 +277,8 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
     air_drift = float(rng.normal(params["air_mu"], params["air_sigma"]))
     proc_extra = float(rng.normal(params["proc_mu"], params["proc_sigma"]))
 
+    # We add wear-dependent heating because in real machines, worn tools
+    # generate more friction which raises both air and process temperatures.
     wear_heat = wear * params["wear_heat_gain"]
     s["Air temperature [K]"] = float(s["Air temperature [K]"] + air_drift + (0.3 * wear_heat))
     s["Process temperature [K]"] = float(s["Process temperature [K]"] + air_drift + proc_extra + wear_heat)
@@ -263,8 +290,9 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
     rpm_drift = float(rng.normal(params["rpm_mu"], params["rpm_sigma"]))
     s["Rotational speed [rpm]"] = float(s["Rotational speed [rpm]"] + rpm_drift)
 
-    # Clip to training data realistic range (p2–p98) so simulator never
-    # generates out-of-distribution inputs that guarantee 100% risk
+    # We clip all values to the training datas realistic range (roughly p2 to p98)
+    # because if the simulator drifts outside what the model has seen, it would
+    # always predict 100% risk which makes the dashboard useless.
     s["Air temperature [K]"]     = float(np.clip(s["Air temperature [K]"],     296.0, 304.0))
     s["Process temperature [K]"] = float(np.clip(s["Process temperature [K]"], 307.0, 313.5))
     s["Torque [Nm]"]             = float(np.clip(s["Torque [Nm]"],              10.0,  63.0))
@@ -273,12 +301,11 @@ def _apply_one_tick(sensor: dict, params: dict, rng: np.random.Generator) -> dic
 
     return s
 
+
 def get_or_create_machine_state(product_id: str, base_sensor: dict, step: bool = True) -> dict:
-    """
-    Returns the simulated machine state for a given product_id.
-    - Creates state from base_sensor once.
-    - Advances it only when sim_tick increases (and step=True).
-    """
+    # We track each machines state separately so when the user switches
+    # between product IDs, each machine remembers where it left off
+    # instead of resetting to its original dataset values.
     machines = st.session_state.machines
     tick_now = int(st.session_state.sim_tick)
 
@@ -294,7 +321,9 @@ def get_or_create_machine_state(product_id: str, base_sensor: dict, step: bool =
     if not step:
         return state
 
-    # advance as many ticks as needed (usually 0 or 1)
+    # We advance by however many ticks were missed since this machine
+    # was last updated. Usually this is 0 or 1 but it can be more if
+    # the user was viewing a different machine for several ticks.
     steps = max(0, tick_now - last_tick)
     for _ in range(steps):
         state = step_sensor_state(state)
@@ -305,6 +334,7 @@ def get_or_create_machine_state(product_id: str, base_sensor: dict, step: bool =
 
     return state
 
+
 def reset_simulation():
     st.session_state.machines = {}
     st.session_state.sim_tick = 0
@@ -312,11 +342,9 @@ def reset_simulation():
 
 
 def step_all_machines(df_source: pd.DataFrame):
-    """
-    Advance ALL machines in the dataset by one tick.
-    Machines not yet initialized are created from their dataset row.
-    Already-initialized machines catch up to the current sim_tick.
-    """
+    # We advance every machine on each tick so that when the user
+    # switches to a different product ID, it has already been aging
+    # in the background rather than sitting at its initial values.
     tick_now = int(st.session_state.sim_tick)
     machines = st.session_state.machines
 
@@ -341,8 +369,11 @@ def step_all_machines(df_source: pd.DataFrame):
         record["last_tick"] = tick_now
         machines[pid] = record
 
-# Shared (Common) KPI + Gauge block
+
 def render_common_kpis_and_gauge(sensor: dict, top_k: int):
+    # We run prediction and TTF estimation here because all three
+    # pages need to display the same KPI cards and gauge, so having
+    # it in one function avoids duplicating the logic.
     model_input = {k: v for k, v in sensor.items() if k != "Product ID"}
     result = predict(model_input)
 
@@ -363,10 +394,14 @@ def render_common_kpis_and_gauge(sensor: dict, top_k: int):
     k2.metric("Risk Probability", f"{risk_prob:.2%}")
     k3.metric("Risk Level", risk_label)
     k4.metric("TTF (min)", f"{ttf_value:.1f}", help=f"Method: {ttf_method}")
+
+    # We show which TTF method was used so the operator knows whether
+    # they are seeing the trained regression estimate or the simpler
+    # wear-based fallback.
     if ttf_method == "wear_rule_fallback":
-        k4.caption("⚠️ Fallback estimate")
+        k4.caption("Fallback estimate")
     else:
-        k4.caption("✅ Regression model")
+        k4.caption("Regression model")
 
     threshold = float(result.get("threshold_used", 0.18))
 
@@ -376,15 +411,18 @@ def render_common_kpis_and_gauge(sensor: dict, top_k: int):
 
     return risk_prob, shap_drivers
 
-# Survival caching helpers (used by Page 3)
+
 def _df_fingerprint(df: pd.DataFrame) -> str:
+    # We hash the dataframe so Streamlits cache knows when the Cox
+    # model needs to be refit. Without this, it would either refit
+    # every refresh (slow) or never update after page 2 edits.
     h = pd.util.hash_pandas_object(df, index=False).values
     return f"{int(h.sum())}_{len(df)}_{len(df.columns)}"
 
 
 @st.cache_resource(show_spinner=False)
 def _fit_cox_cached(df_cox: pd.DataFrame, _fp: str):
-    # Import lazily so Page 1/2 don't require lifelines.
+    # We import lifelines lazily here so pages 1 and 2 dont crash
+    # if lifelines is not installed on the users machine.
     from src.survival_analysis import fit_cox_model
-
     return fit_cox_model(df_cox)
