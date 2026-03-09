@@ -1,10 +1,10 @@
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+
 def build_preprocessor(df):
     categorical_features = ["Type"]
 
-    # We exclude these columns because they are either identifiers, the target, or failure mode flags that would leak information
     exclude_cols = {
         "UDI",
         "Product ID",
@@ -30,3 +30,20 @@ def build_preprocessor(df):
     )
 
     return preprocessor
+
+
+def risk_tier(
+    probability: float,
+    high_threshold: float = 0.70,
+    medium_threshold: float = 0.35,
+) -> str:
+    """
+    Convert failure probability into Low / Medium / High risk label.
+    """
+
+    if probability >= high_threshold:
+        return "High Risk"
+    elif probability >= medium_threshold:
+        return "Medium Risk"
+    else:
+        return "Low Risk"
