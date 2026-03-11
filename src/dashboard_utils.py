@@ -9,6 +9,13 @@ from src.inference import predict, compute_ttf_proxy
 from src.shap_explain import get_top_shap_drivers
 from src.simulator import step_sensor_state
 
+MAINTENANCE_TRIGGER_PROB = 0.90
+MAINTENANCE_TICKS_BY_TYPE = {
+    "H": 20,
+    "M": 15,
+    "L": 12,
+}
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -207,17 +214,96 @@ def _init_sim_state():
 
 
 def _attach_sim_internals(sensor: dict) -> dict:
-    # We add these hidden fields because the simulator needs to track
-    # internal state like workload cycles and temperature targets between
-    # ticks, but we dont want them showing up in the sensor table.
+    # We add hidden fields because the simulator needs to track
+    # internal state between ticks, but we dont want them shown
+    # in the sensor table.
     s = dict(sensor)
+
     s.setdefault("_t", 0)
     s.setdefault("_air_target", float(s["Air temperature [K]"]))
     s.setdefault("_rpm_base", float(s["Rotational speed [rpm]"]))
     s.setdefault("_workload", 0.5)
     s.setdefault("_last_shock", 0.0)
+
+    # We store the original sensor snapshot so maintenance can
+    # restore the machine back to its pre-simulation baseline.
+    s.setdefault("_base_Air temperature [K]", float(s["Air temperature [K]"]))
+    s.setdefault("_base_Process temperature [K]", float(s["Process temperature [K]"]))
+    s.setdefault("_base_Rotational speed [rpm]", float(s["Rotational speed [rpm]"]))
+    s.setdefault("_base_Torque [Nm]", float(s["Torque [Nm]"]))
+    s.setdefault("_base_Tool wear [min]", float(s["Tool wear [min]"]))
+
+    # Maintenance state
+    s.setdefault("_maintenance_active", False)
+    s.setdefault("_maintenance_ticks_left", 0)
+
     return s
 
+def _get_maintenance_duration(sensor: dict) -> int:
+    mtype = str(sensor.get("Type", "M")).upper()
+    return int(MAINTENANCE_TICKS_BY_TYPE.get(mtype, 15))
+
+
+def _start_maintenance(sensor: dict) -> dict:
+    sensor["_maintenance_active"] = True
+    sensor["_maintenance_ticks_left"] = _get_maintenance_duration(sensor)
+    return sensor
+
+
+def _finish_maintenance(sensor: dict) -> dict:
+    # Reset all live values back to original baseline values,
+    # except tool wear which should become 0 after repair.
+    sensor["Air temperature [K]"] = float(sensor.get("_base_Air temperature [K]", sensor["Air temperature [K]"]))
+    sensor["Process temperature [K]"] = float(sensor.get("_base_Process temperature [K]", sensor["Process temperature [K]"]))
+    sensor["Rotational speed [rpm]"] = float(sensor.get("_base_Rotational speed [rpm]", sensor["Rotational speed [rpm]"]))
+    sensor["Torque [Nm]"] = float(sensor.get("_base_Torque [Nm]", sensor["Torque [Nm]"]))
+    sensor["Tool wear [min]"] = 0.0
+
+    # Reset simulator internals so the machine resumes cleanly
+    sensor["_air_target"] = float(sensor["Air temperature [K]"])
+    sensor["_rpm_base"] = float(sensor["Rotational speed [rpm]"])
+    sensor["_workload"] = 0.5
+    sensor["_last_shock"] = 0.0
+
+    sensor["_maintenance_active"] = False
+    sensor["_maintenance_ticks_left"] = 0
+    return sensor
+
+
+def _advance_with_maintenance(sensor: dict) -> dict:
+    # If already under maintenance, just count ticks down
+    if bool(sensor.get("_maintenance_active", False)):
+        ticks_left = int(sensor.get("_maintenance_ticks_left", 0)) - 1
+        sensor["_maintenance_ticks_left"] = max(0, ticks_left)
+
+        if sensor["_maintenance_ticks_left"] <= 0:
+            sensor = _finish_maintenance(sensor)
+
+        sensor["_t"] = int(sensor.get("_t", 0)) + 1
+        return sensor
+
+    # Normal simulation tick
+    sensor = step_sensor_state(sensor)
+
+    # Check if machine should enter maintenance after this tick
+    model_input = {
+        "Type": sensor.get("Type", "M"),
+        "Air temperature [K]": float(sensor.get("Air temperature [K]", 0)),
+        "Process temperature [K]": float(sensor.get("Process temperature [K]", 0)),
+        "Rotational speed [rpm]": float(sensor.get("Rotational speed [rpm]", 0)),
+        "Torque [Nm]": float(sensor.get("Torque [Nm]", 0)),
+        "Tool wear [min]": float(sensor.get("Tool wear [min]", 0)),
+    }
+
+    try:
+        result = predict(model_input)
+        risk_prob = float(result.get("risk_probability", 0.0))
+        if risk_prob >= MAINTENANCE_TRIGGER_PROB:
+            sensor = _start_maintenance(sensor)
+    except Exception:
+        pass
+
+    return sensor
 
 def _get_machine_params(product_id: str, base_sensor: dict, rng: np.random.Generator) -> dict:
     # We cache drift parameters per machine so each product ID has
@@ -326,7 +412,7 @@ def get_or_create_machine_state(product_id: str, base_sensor: dict, step: bool =
     # the user was viewing a different machine for several ticks.
     steps = max(0, tick_now - last_tick)
     for _ in range(steps):
-        state = step_sensor_state(state)
+        state = _advance_with_maintenance(state)
 
     record["state"] = state
     record["last_tick"] = tick_now
@@ -363,7 +449,7 @@ def step_all_machines(df_source: pd.DataFrame):
 
         steps = max(0, tick_now - last_tick)
         for _ in range(steps):
-            state = step_sensor_state(state)
+            state = _advance_with_maintenance(state)
 
         record["state"] = state
         record["last_tick"] = tick_now
@@ -372,44 +458,79 @@ def step_all_machines(df_source: pd.DataFrame):
 
 def render_common_kpis_and_gauge(sensor: dict, top_k: int):
     # We run prediction and TTF estimation here because all three
-    # pages need to display the same KPI cards and gauge, so having
-    # it in one function avoids duplicating the logic.
-    model_input = {k: v for k, v in sensor.items() if k != "Product ID"}
-    result = predict(model_input)
+    # pages need to display the same KPI cards and gauge.
+    model_input = {
+        k: v for k, v in sensor.items()
+        if k != "Product ID" and not str(k).startswith("_")
+    }
 
-    risk_prob = float(result.get("risk_probability", 0.0))
-    risk_label = str(result.get("risk_label", "N/A"))
-    ttf_info = compute_ttf_proxy(model_input)
-    ttf_value = float(ttf_info.get("ttf_min", 0.0))
-    ttf_method = str(ttf_info.get("method", "unknown"))
+    maintenance_active = bool(sensor.get("_maintenance_active", False))
+    operational_status = "Under Maintenance" if maintenance_active else "Operational"
 
-    shap_drivers = []
-    try:
-        shap_drivers = get_top_shap_drivers(model_input, top_k=top_k)
-    except Exception as e:
-        st.warning(f"SHAP drivers not available: {e}")
+    if maintenance_active:
+        risk_prob = None
+        risk_label = "N/A"
 
-    k1, k2, k3, k4 = st.columns(4)
+        ttf_info = compute_ttf_proxy(model_input)
+        ttf_value = float(ttf_info.get("ttf_min", 0.0))
+        ttf_method = str(ttf_info.get("method", "unknown"))
+
+        shap_drivers = []
+    else:
+        result = predict(model_input)
+
+        risk_prob = float(result.get("risk_probability", 0.0))
+        risk_label = str(result.get("risk_label", "N/A"))
+
+        ttf_info = compute_ttf_proxy(model_input)
+        ttf_value = float(ttf_info.get("ttf_min", 0.0))
+        ttf_method = str(ttf_info.get("method", "unknown"))
+
+        shap_drivers = []
+        try:
+            shap_drivers = get_top_shap_drivers(model_input, top_k=top_k)
+        except Exception as e:
+            st.warning(f"SHAP drivers not available: {e}")
+
+    k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Product ID", sensor.get("Product ID", "N/A"))
-    k2.metric("Risk Probability", f"{risk_prob:.2%}")
-    k3.metric("Risk Level", risk_label)
-    k4.metric("TTF (min)", f"{ttf_value:.1f}", help=f"Method: {ttf_method}")
+    k2.metric("Risk Probability", "N/A" if maintenance_active else f"{risk_prob:.2%}")
+    k3.metric("Risk Level", "N/A" if maintenance_active else risk_label)
+    k4.metric("TTF (min)", "N/A" if maintenance_active else f"{ttf_value:.1f}", help=f"Method: {ttf_method}")
+    k5.metric("Operational Status", operational_status)
 
-    # We show which TTF method was used so the operator knows whether
-    # they are seeing the trained regression estimate or the simpler
-    # wear-based fallback.
     if ttf_method == "wear_rule_fallback":
         k4.caption("Fallback estimate")
     else:
         k4.caption("Regression model")
 
-    threshold = float(result.get("threshold_used", 0.18))
-
     g1, g2, g3 = st.columns([1, 2, 1])
     with g2:
-        st.plotly_chart(make_risk_gauge(risk_prob, threshold=threshold), use_container_width=True)
+        if maintenance_active:
+            st.markdown(
+                """
+                <div style="
+                    height:320px;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    border:1px solid rgba(255,255,255,0.15);
+                    border-radius:12px;
+                    background-color:rgba(255,255,255,0.02);
+                    font-size:28px;
+                    font-weight:600;
+                    color:white;
+                ">
+                    Failure Risk Gauge: N/A
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        else:
+            threshold = float(result.get("threshold_used", 0.18))
+            st.plotly_chart(make_risk_gauge(risk_prob, threshold=threshold), use_container_width=True)
 
-    return risk_prob, shap_drivers
+    return (0.0 if risk_prob is None else risk_prob), shap_drivers
 
 
 def _df_fingerprint(df: pd.DataFrame) -> str:

@@ -339,6 +339,8 @@ if page == "1) Simulation Dashboard":
     st.subheader("High Risk Alerts")
 
     machines = st.session_state.machines
+    maintenance_rows = []
+
     if machines:
         from src.features import add_engineered_features as _add_feat
 
@@ -348,6 +350,19 @@ if page == "1) Simulation Dashboard":
         batch_pids = []
         for pid, record in machines.items():
             state = record["state"]
+
+            if bool(state.get("_maintenance_active", False)):
+                maintenance_rows.append({
+                    "Product ID": pid,
+                    "Type": state.get("Type", "M"),
+                    "Maintenance Ticks Left": state.get("_maintenance_ticks_left", 0),
+                    "Air Temp [K]": float(state.get("Air temperature [K]", 0)),
+                    "Torque [Nm]": float(state.get("Torque [Nm]", 0)),
+                    "RPM": float(state.get("Rotational speed [rpm]", 0)),
+                    "Tool Wear [min]": float(state.get("Tool wear [min]", 0)),
+                })
+                continue
+
             batch_pids.append(pid)
             batch_rows.append({
                 "Type": state.get("Type", "M"),
@@ -370,8 +385,24 @@ if page == "1) Simulation Dashboard":
                 # We only show machines above 70% because that matches the gauge red zone
                 alert_rows = []
                 for i, (pid, prob) in enumerate(zip(batch_pids, probs)):
+
+                    r = batch_rows[i]
+
+                    # Machines above 90% should move to maintenance table
+                    if prob >= 0.90:
+                        maintenance_rows.append({
+                            "Product ID": pid,
+                            "Type": r["Type"],
+                            "Maintenance Status": "Under Maintenance",
+                            "Air Temp [K]": f"{r['Air temperature [K]']:.1f}",
+                            "Torque [Nm]": f"{r['Torque [Nm]']:.1f}",
+                            "RPM": f"{r['Rotational speed [rpm]']:.0f}",
+                            "Tool Wear [min]": f"{r['Tool wear [min]']:.1f}",
+                        })
+                        continue
+
+                    # High risk alerts only between 70% and 90%
                     if prob >= 0.70:
-                        r = batch_rows[i]
                         ttf_info = compute_ttf_proxy(r)
                         alert_rows.append({
                             "Product ID": pid,
@@ -399,6 +430,21 @@ if page == "1) Simulation Dashboard":
             st.info("No machines initialized yet.")
     else:
         st.info("Start the simulation to monitor machine risk levels.")
+
+    st.divider()
+    st.subheader("Machines Under Maintenance")
+
+    if machines:
+        if maintenance_rows:
+            maint_df = pd.DataFrame(maintenance_rows)
+            maint_df = maint_df.reset_index(drop=True)
+            maint_df.index = range(1, len(maint_df) + 1)
+            st.dataframe(maint_df, use_container_width=True)
+            st.caption(f"{len(maintenance_rows)} machine(s) currently under maintenance")
+        else:
+            st.info("No machines currently under maintenance.")
+    else:
+        st.info("Start the simulation to monitor maintenance status.")
 
     if st.session_state.sim_running:
         time.sleep(max(0.5, refresh_seconds - 0.3))
