@@ -5,9 +5,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.inference import predict, compute_ttf_proxy
-from src.shap_explain import get_top_shap_drivers
-from src.simulator import step_sensor_state
 
 MAINTENANCE_TRIGGER_PROB = 0.90
 MAINTENANCE_TICKS_BY_TYPE = {
@@ -211,6 +208,12 @@ def _init_sim_state():
         st.session_state.page3_pid = None
     if "drift_by_id" not in st.session_state:
         st.session_state.drift_by_id = {}
+    # Number of machine slots chosen by the slider (1-10)
+    if "sim_num_machines" not in st.session_state:
+        st.session_state.sim_num_machines = 1
+    # List of product IDs chosen via the per-slot dropdowns
+    if "sim_selected_pids" not in st.session_state:
+        st.session_state.sim_selected_pids = []
 
 
 def _attach_sim_internals(sensor: dict) -> dict:
@@ -250,22 +253,41 @@ def _start_maintenance(sensor: dict) -> dict:
     return sensor
 
 
-def _finish_maintenance(sensor: dict) -> dict:
-    # Reset all live values back to original baseline values,
-    # except tool wear which should become 0 after repair.
-    sensor["Air temperature [K]"] = float(sensor.get("_base_Air temperature [K]", sensor["Air temperature [K]"]))
-    sensor["Process temperature [K]"] = float(sensor.get("_base_Process temperature [K]", sensor["Process temperature [K]"]))
-    sensor["Rotational speed [rpm]"] = float(sensor.get("_base_Rotational speed [rpm]", sensor["Rotational speed [rpm]"]))
-    sensor["Torque [Nm]"] = float(sensor.get("_base_Torque [Nm]", sensor["Torque [Nm]"]))
-    sensor["Tool wear [min]"] = 0.0
+@st.cache_data(show_spinner=False)
+def _get_fleet_medians() -> dict:
+    """
+    Compute fleet-wide medians for Torque and Rotational speed once and
+    cache them. These are used as the post-repair reset targets so every
+    machine returns to a healthy, neutral operating point rather than its
+    original (possibly already-degraded) baseline values.
+    """
+    df = load_cleaned_dataset()
+    return {
+        "Torque [Nm]":            float(df["Torque [Nm]"].median()),
+        "Rotational speed [rpm]": float(df["Rotational speed [rpm]"].median()),
+    }
 
-    # Reset simulator internals so the machine resumes cleanly
+
+def _finish_maintenance(sensor: dict) -> dict:
+    # After repair we restore temperatures to the machine's own baseline
+    # (the physical environment hasn't changed) but reset Torque and RPM
+    # to fleet medians — representing a freshly serviced, neutral state —
+    # and zero out Tool wear to reflect new tooling.
+    medians = _get_fleet_medians()
+
+    sensor["Air temperature [K]"]     = float(sensor.get("_base_Air temperature [K]",     sensor["Air temperature [K]"]))
+    sensor["Process temperature [K]"] = float(sensor.get("_base_Process temperature [K]", sensor["Process temperature [K]"]))
+    sensor["Rotational speed [rpm]"]  = medians["Rotational speed [rpm]"]
+    sensor["Torque [Nm]"]             = medians["Torque [Nm]"]
+    sensor["Tool wear [min]"]         = 0.0
+
+    # Reset simulator internals so the machine resumes cleanly from the new state
     sensor["_air_target"] = float(sensor["Air temperature [K]"])
-    sensor["_rpm_base"] = float(sensor["Rotational speed [rpm]"])
-    sensor["_workload"] = 0.5
+    sensor["_rpm_base"]   = medians["Rotational speed [rpm]"]
+    sensor["_workload"]   = 0.5
     sensor["_last_shock"] = 0.0
 
-    sensor["_maintenance_active"] = False
+    sensor["_maintenance_active"]    = False
     sensor["_maintenance_ticks_left"] = 0
     return sensor
 
@@ -283,6 +305,7 @@ def _advance_with_maintenance(sensor: dict) -> dict:
         return sensor
 
     # Normal simulation tick
+    from src.simulator import step_sensor_state  # lazy – avoids circular import
     sensor = step_sensor_state(sensor)
 
     # Check if machine should enter maintenance after this tick
@@ -296,6 +319,7 @@ def _advance_with_maintenance(sensor: dict) -> dict:
     }
 
     try:
+        from src.inference import predict  # lazy – avoids circular import
         result = predict(model_input)
         risk_prob = float(result.get("risk_probability", 0.0))
         if risk_prob >= MAINTENANCE_TRIGGER_PROB:
@@ -428,16 +452,34 @@ def reset_simulation():
 
 
 def step_all_machines(df_source: pd.DataFrame):
-    # We advance every machine on each tick so that when the user
-    # switches to a different product ID, it has already been aging
-    # in the background rather than sitting at its initial values.
+    # We only advance the machines the user has explicitly selected via
+    # the sidebar dropdowns. Stepping the full 10 000-row dataset every
+    # tick was the primary cause of slow refreshes — now we touch at
+    # most 10 rows regardless of dataset size.
     tick_now = int(st.session_state.sim_tick)
     machines = st.session_state.machines
 
-    for _, row in df_source.iterrows():
-        pid = str(row["Product ID"])
+    selected_pids = [str(p) for p in st.session_state.get("sim_selected_pids", [])]
+    if not selected_pids:
+        return
+
+    # Build an index once so look-ups are O(1) instead of a full scan.
+    # We keep a separate dict of rows with Product ID restored because
+    # set_index() removes "Product ID" as a column, which makes
+    # build_sensor_from_row raise a KeyError when it tries row["Product ID"].
+    df_indexed = df_source.set_index("Product ID")
+
+    for pid in selected_pids:
+        if pid not in df_indexed.index:
+            continue
 
         if pid not in machines:
+            # .loc[pid] returns a Series if unique, DataFrame if duplicates
+            raw = df_indexed.loc[pid]
+            if isinstance(raw, pd.DataFrame):
+                raw = raw.iloc[0]
+            row = raw.copy()
+            row["Product ID"] = pid   # restore the column removed by set_index
             base = build_sensor_from_row(row)
             init_state = _attach_sim_internals(base)
             machines[pid] = {"state": init_state, "last_tick": tick_now}
@@ -457,6 +499,10 @@ def step_all_machines(df_source: pd.DataFrame):
 
 
 def render_common_kpis_and_gauge(sensor: dict, top_k: int):
+    # Lazy imports here break the circular dependency chain:
+    # dashboard_utils → inference → (indirectly) dashboard_utils
+    from src.inference import predict, compute_ttf_proxy  # noqa: PLC0415
+    from src.shap_explain import get_top_shap_drivers      # noqa: PLC0415
     # We run prediction and TTF estimation here because all three
     # pages need to display the same KPI cards and gauge.
     model_input = {

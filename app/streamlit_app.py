@@ -80,6 +80,10 @@ if st.session_state.page2_pid is None and product_ids:
 if st.session_state.page3_pid is None and product_ids:
     st.session_state.page3_pid = product_ids[0]
 
+# Seed the first machine slot if the list is still empty after init
+if not st.session_state.sim_selected_pids and product_ids:
+    st.session_state.sim_selected_pids = [product_ids[0]]
+
 # Sidebar navigation
 st.sidebar.header("Navigation")
 page = st.sidebar.radio(
@@ -97,12 +101,28 @@ if page == "1) Simulation Dashboard":
     st.sidebar.header("Simulation Controls")
 
     st.session_state.page1_pid = st.sidebar.selectbox(
-        "Product ID",
+        "Product ID (detail view)",
         product_ids,
         index=product_ids.index(st.session_state.page1_pid) if st.session_state.page1_pid in product_ids else 0,
         key="page1_pid_selectbox",
     )
 
+    # ── Machine selection: slider + one dropdown per slot ──────────────
+    # Single multiselect — check any combination of Product IDs.
+    # Selections survive Start/Pause and are only wiped on Reset.
+    selected = st.sidebar.multiselect(
+        "Machines to simulate",
+        options=product_ids,
+        default=st.session_state.sim_selected_pids if st.session_state.sim_selected_pids else [product_ids[0]],
+        key="sim_pid_multiselect",
+    )
+    st.session_state.sim_selected_pids = selected
+    st.session_state.sim_num_machines = len(selected)
+
+    if not selected:
+        st.sidebar.caption("⚠️ Select at least one machine to simulate.")
+
+    # ── Start / Pause ───────────────────────────────────────────────────
     c1, c2 = st.sidebar.columns(2)
     with c1:
         if st.button("Start", use_container_width=True):
@@ -164,12 +184,17 @@ else:
 kpi_row = df_source[df_source["Product ID"] == str(active_pid)].iloc[0]
 kpi_base_sensor = build_sensor_from_row(kpi_row)
 
-# We advance all machines together so switching product IDs shows correct state
+# We advance only the user-selected machines. The detail-view PID is
+# read with step=False so it is never stepped outside of step_all_machines.
 if page == "1) Simulation Dashboard":
     if st.session_state.sim_running:
         st.session_state.sim_tick += 1
         step_all_machines(df_source)
-    kpi_sensor = get_or_create_machine_state(str(active_pid), kpi_base_sensor)
+    selected_pids = [str(p) for p in st.session_state.get("sim_selected_pids", [])]
+    if str(active_pid) in selected_pids:
+        kpi_sensor = get_or_create_machine_state(str(active_pid), kpi_base_sensor, step=False)
+    else:
+        kpi_sensor = kpi_base_sensor
 else:
     kpi_sensor = kpi_base_sensor
 
@@ -186,10 +211,13 @@ if page == "1) Simulation Dashboard":
     page_content_pid = st.session_state.page1_pid
     row = df_source[df_source["Product ID"] == str(page_content_pid)].iloc[0]
     base_sensor = build_sensor_from_row(row)
-    if st.session_state.sim_running:
-        sensor = get_or_create_machine_state(str(page_content_pid), base_sensor)
-    else:
+    # Always step=False here — step_all_machines already advanced selected machines.
+    # If the detail-view PID is not in the selected list, show its static baseline.
+    _selected = [str(p) for p in st.session_state.get("sim_selected_pids", [])]
+    if str(page_content_pid) in _selected:
         sensor = get_or_create_machine_state(str(page_content_pid), base_sensor, step=False)
+    else:
+        sensor = base_sensor
 
     # We save each tick to history so we can plot the risk trend over time
     st.session_state.history.append(
