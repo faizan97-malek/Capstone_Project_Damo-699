@@ -14,7 +14,7 @@ from sklearn.metrics import (
     precision_recall_curve,
 )
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
 
 from src.data_loader import load_raw_data
@@ -46,21 +46,20 @@ def train_model():
     print("Building preprocessing pipeline...")
     preprocessor = build_preprocessor(df)
 
-    # ---------------------------------------------------------------
-    # Soft Voting Ensemble
-    #
-    # Selected for deployment over Stacking (LR meta) because:
-    #   1. Produces well-spread probability scores (0.0 to 0.96 range)
+    # We selected Weighted Soft Voting (RF + GB + MLP) for deployment
+    # over Stacking (LR meta) because:
+    #   1. It produces well spread probability scores (0.0 to 0.96 range)
     #      making the continuous risk gauge meaningful for operators
-    #   2. Threshold of ~0.18 aligns naturally with the gauge scale —
-    #      a machine at 20% probability visually reads as medium-high risk
-    #   3. Stacking achieves marginally higher PR-AUC (0.881 vs 0.840)
-    #      but compresses all safe-machine probabilities into 0.12-0.13,
-    #      making the gauge flat and the risk labels unintuitive
-    #
-    # Stacking results are fully documented in notebook 07 for the report.
-    # ---------------------------------------------------------------
-    print("Building Soft Voting ensemble...")
+    #   2. Stacking achieves similar PR-AUC but compresses all safe machine
+    #      probabilities into a narrow range, making the gauge flat
+    #   3. Using the same base estimators (RF, GB, MLP) across soft voting,
+    #      weighted voting, and stacking ensures the deployment model is
+    #      directly traceable to the comparison in notebook 07
+    #   4. RF is calibrated with isotonic regression so predicted probabilities
+    #      better reflect actual failure rates
+    #   5. Weights [2, 2, 1] give RF and GB higher influence because they
+    #      consistently showed stronger PR-AUC than MLP
+    print("Building Weighted Soft Voting ensemble (RF + GB + MLP)...")
 
     rf = RandomForestClassifier(
         n_estimators=400,
@@ -70,20 +69,22 @@ def train_model():
         n_jobs=-1,
     )
     gb = GradientBoostingClassifier(random_state=42)
-    lr = LogisticRegression(
-        max_iter=3000,
-        class_weight="balanced",
-        solver="liblinear",
+    mlp = MLPClassifier(
+        hidden_layer_sizes=(64, 32),
+        max_iter=500,
         random_state=42,
     )
 
+    # We calibrate RF with isotonic regression so its predicted
+    # probabilities better reflect actual failure rates.
     rf_cal = CalibratedClassifierCV(rf, method="isotonic", cv=3)
-    lr_cal = CalibratedClassifierCV(lr, method="isotonic", cv=3)
 
+    # We give RF and GB higher weight because they consistently
+    # showed stronger PR-AUC than MLP in notebook 07.
     voting = VotingClassifier(
-        estimators=[("lr", lr_cal), ("rf", rf_cal), ("gb", gb)],
+        estimators=[("rf", rf_cal), ("gb", gb), ("mlp", mlp)],
         voting="soft",
-        weights=[1, 2, 2],
+        weights=[2, 2, 1],
     )
 
     pipeline = Pipeline([
@@ -97,23 +98,10 @@ def train_model():
     print("Evaluating model...")
     y_prob = pipeline.predict_proba(X_test)[:, 1]
 
-    # ---------------------------------------------------------------
-    # Threshold selection
-    #
     # In predictive maintenance, missing a failure (false negative) is
-    # far more costly than a false alarm (false positive). A missed
-    # failure means unexpected downtime, equipment damage, safety risk.
-    # A false alarm means an unnecessary inspection — much cheaper.
-    #
-    # We scan the Precision-Recall curve and select the threshold that
-    # achieves recall >= 0.95 with the highest possible precision.
-    # For Soft Voting on this dataset this consistently lands near 0.02:
-    #   - Recall:    ~0.956  (catches 95.6% of real failures)
-    #   - Precision: ~0.300  (30% of flagged machines are real failures)
-    #   - False alarms: ~152 out of 1932 safe machines (8%)
-    #
-    # This is the justified tradeoff: 3 missed failures vs 152 false alarms.
-    # ---------------------------------------------------------------
+    # far more costly than a false alarm (false positive). We scan the
+    # Precision-Recall curve and select the threshold that achieves
+    # recall >= 0.95 with the highest possible precision.
     precision_vals, recall_vals, thresholds_pr = precision_recall_curve(y_test, y_prob)
 
     FINAL_THRESHOLD = None
@@ -128,7 +116,7 @@ def train_model():
 
     if FINAL_THRESHOLD is None:
         FINAL_THRESHOLD = 0.5
-        print("Warning: fallback threshold 0.5 — no threshold met recall target")
+        print("Warning: fallback threshold 0.5, no threshold met recall target")
     else:
         print(f"Threshold: {FINAL_THRESHOLD:.6f}  (recall >= {achieved_recall})")
 
@@ -157,7 +145,7 @@ def train_model():
     eval_path = models_dir / "eval.json"
     with open(eval_path, "w") as f:
         json.dump({
-            "model": "SoftVotingEnsemble",
+            "model": "WeightedSoftVoting_RF_GB_MLP_calibrated",
             "roc_auc": roc,
             "pr_auc": pr_auc,
             "threshold_default": 0.5,
@@ -171,16 +159,16 @@ def train_model():
     with open(threshold_path, "w") as f:
         json.dump({"final_threshold": FINAL_THRESHOLD}, f, indent=4)
 
-    print(f"\n✅ Model saved     → {model_path}")
-    print(f"✅ Metrics saved   → {eval_path}")
-    print(f"✅ Threshold saved → {threshold_path}")
+    print(f"\nModel saved     -> {model_path}")
+    print(f"Metrics saved   -> {eval_path}")
+    print(f"Threshold saved -> {threshold_path}")
 
 
 def train_rul_model():
     """
     Train the RUL (Remaining Useful Life) regression model.
     Replicates the logic from Notebook 09 so that all model artifacts
-    are generated from src/train.py — no notebook execution required.
+    are generated from src/train.py with no notebook execution required.
     """
     from sklearn.compose import ColumnTransformer
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -190,9 +178,7 @@ def train_rul_model():
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
     from sklearn.model_selection import train_test_split as tts
 
-    print("\n" + "=" * 60)
-    print("Training RUL regression model...")
-    print("=" * 60)
+    print("\nTraining RUL regression model...")
 
     df = load_raw_data()
 
@@ -220,7 +206,7 @@ def train_rul_model():
     RUL_CAP = 500
     df["RUL"] = (df["wear_remaining"] / df["deg_rate"]).clip(upper=RUL_CAP)
 
-    print(f"RUL range: {df['RUL'].min():.1f} — {df['RUL'].max():.1f} minutes")
+    print(f"RUL range: {df['RUL'].min():.1f} to {df['RUL'].max():.1f} minutes")
     print(f"RUL mean:  {df['RUL'].mean():.1f} minutes")
 
     # ── Features ──
@@ -283,7 +269,7 @@ def train_rul_model():
     rul_path = models_dir / "rul_regressor.joblib"
     joblib.dump(best_pipe, rul_path)
 
-    print(f"\n✅ RUL model saved → {rul_path}")
+    print(f"\nRUL model saved -> {rul_path}")
     print(f"   Selected: {best_name}  (MAE={best_mae:.2f} min)")
 
 
