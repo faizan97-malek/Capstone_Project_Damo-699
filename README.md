@@ -210,10 +210,14 @@ python -m venv venv
 ```
 
 #### Windows
+```bash
 venv\Scripts\activate
+```
 
 #### Mac/Linux
+```bash
 source venv/bin/activate
+```
 
 ### 3. Install project dependencies
 ```bash
@@ -232,6 +236,8 @@ From the project root:
 ```bash
 streamlit run app/streamlit_app.py
 ```
+This opens up  http://localhost:8501 where u can see the dashboard.
+
 
 ## Dashboard
 
@@ -291,7 +297,7 @@ The system includes a **3-page interactive Streamlit dashboard** for real-time m
     - Automatically resumes from last data saved to latest_snapshot.csv
 
 
-# Threshold Optimization & Risk Tiering
+## Threshold Optimization & Risk Tiering
 
 Instead of using the default 0.5 classification threshold, a custom threshold is selected using Precision–Recall curve analysis to balance:
 
